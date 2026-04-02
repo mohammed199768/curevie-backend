@@ -695,6 +695,54 @@ async function getRequestById(id, { callerId = null, callerRole = null } = {}) {
   };
 }
 
+async function getPatientHistory(requestId, { callerId, callerRole }) {
+  const core = await getRequestRepo().getCoreById(requestId);
+  if (!core) {
+    throw new AppError('Request not found', 404, 'REQUEST_NOT_FOUND');
+  }
+
+  if (core.status === 'CLOSED' || core.status === 'CANCELLED') {
+    throw new AppError(
+      'Access to patient history is not allowed for closed or cancelled requests',
+      403,
+      'FORBIDDEN'
+    );
+  }
+
+  if (callerRole === 'PROVIDER') {
+    const hasAccess = await workflowService.providerHasRequestAccess(requestId, callerId);
+    if (!hasAccess) {
+      throw new AppError('Forbidden', 403, 'FORBIDDEN');
+    }
+  }
+
+  const { rows } = await getRequestDb().query(
+    `
+    SELECT
+      sr.id AS request_id,
+      sr.service_type,
+      sr.closed_at,
+      sr.scheduled_at,
+      rpr.symptoms_summary,
+      rpr.diagnosis,
+      rpr.treatment_plan,
+      rpr.notes,
+      rpr.recommendations,
+      COALESCE(rpr.provider_name_snapshot, sp.full_name) AS provider_name
+    FROM service_requests sr
+    JOIN request_provider_reports rpr ON rpr.request_id = sr.id
+    LEFT JOIN service_providers sp ON sp.id = rpr.provider_id
+    WHERE sr.patient_id = $1
+      AND sr.id != $2
+      AND sr.status = 'CLOSED'
+    ORDER BY sr.closed_at DESC
+    `,
+    [core.patient_id, requestId]
+  );
+
+  return rows;
+}
+
 async function updateRequestStatus({
   id,
   status,
@@ -1508,6 +1556,7 @@ module.exports = {
   createRequest,
   listRequests,
   getRequestById,
+  getPatientHistory,
   updateRequestStatus,
   updateGuestDemographics,
   assignProvider,

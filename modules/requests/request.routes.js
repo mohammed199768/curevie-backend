@@ -411,6 +411,14 @@ router.get(
   validate(requestIdParamSchema, 'params'),
   asyncHandler(requestController.listPayments)
 );
+router.get(
+  '/:id/patient-history',
+  authenticate,
+  staffOnly,
+  readLimiter,
+  validate(requestIdParamSchema, 'params'),
+  asyncHandler(requestController.getPatientHistory)
+);
 router.put(
   '/:id/payments/:paymentId/approve',
   authenticate,

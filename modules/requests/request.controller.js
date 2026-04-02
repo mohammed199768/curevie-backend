@@ -559,6 +559,14 @@ async function getProviderRatings(req, res) {
   return res.json(data); // AUDIT-FIX: P3-STEP7C-COMPAT - controller remains a thin HTTP adapter with the same response shape.
 }
 
+async function getPatientHistory(req, res) {
+  const data = await requestService.getPatientHistory(req.params.id, {
+    callerId: req.user.id,
+    callerRole: req.user.role,
+  });
+  res.json({ data });
+}
+
 async function getRequestForProviderLifecycle(requestId) {
   return getRequestCore(requestId);
 }
@@ -1195,6 +1203,7 @@ module.exports = {
   uploadRequestFiles,
   rateRequest,
   getProviderRatings,
+  getPatientHistory,
   startRequest,
   completeRequest,
   completeWithPayment,
