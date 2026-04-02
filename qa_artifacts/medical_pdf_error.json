@@ -1,0 +1,12 @@
+{
+  "at": "2026-02-24T22:00:00.653Z",
+  "endpoint": "/reports/requests/027a4304-4606-47b2-b2e5-418172de2472/medical/pdf",
+  "status": 404,
+  "contentType": "application/json; charset=utf-8",
+  "bodyPreview": "{\"message\":\"Route GET /api/reports/requests/027a4304-4606-47b2-b2e5-418172de2472/medical/pdf not found\",\"code\":\"ROUTE_NOT_FOUND\"}",
+  "parsed": {
+    "message": "Route GET /api/reports/requests/027a4304-4606-47b2-b2e5-418172de2472/medical/pdf not found",
+    "code": "ROUTE_NOT_FOUND"
+  },
+  "hint": "If you just added this endpoint and got ROUTE_NOT_FOUND, restart the backend process."
+}

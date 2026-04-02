@@ -1,0 +1,16 @@
+-- Phase 3: media URLs for BunnyCDN-backed assets
+
+ALTER TABLE IF EXISTS patients
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+ALTER TABLE IF EXISTS service_providers
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+ALTER TABLE IF EXISTS services
+  ADD COLUMN IF NOT EXISTS image_url TEXT;
+
+ALTER TABLE IF EXISTS packages
+  ADD COLUMN IF NOT EXISTS image_url TEXT;
+
+ALTER TABLE IF EXISTS lab_tests
+  ADD COLUMN IF NOT EXISTS image_url TEXT;

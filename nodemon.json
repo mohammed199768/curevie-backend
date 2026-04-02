@@ -1,0 +1,6 @@
+{
+  "watch": ["*.js", "modules", "middlewares", "utils", "config"],
+  "ext": "js,json",
+  "ignore": ["uploads/", "qa_artifacts/", "logs/", "*.pdf", "*.log", "node_modules/"],
+  "delay": 500
+}

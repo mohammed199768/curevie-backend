@@ -1,0 +1,67 @@
+{
+  "at": "2026-02-25T06:01:46.111Z",
+  "endpointUsed": "/reports/requests/2089f2c9-593d-4831-b0ce-aae833a8515c/medical/pdf",
+  "contentType": "application/pdf",
+  "contentDisposition": "attachment; filename=\"medical_report_2089f2c9-593d-4831-b0ce-aae833a8515c.pdf\"",
+  "bytes": 234119,
+  "file": "C:\\Users\\domim\\Desktop\\curevie backend\\qa_artifacts\\medical_report_2089f2c9-593d-4831-b0ce-aae833a8515c.pdf",
+  "labTestsIncluded": 8,
+  "panelSummary": [
+    {
+      "name": "Hemoglobin",
+      "result": "15.2",
+      "unit": "g/dL",
+      "reference": "13.5-17.5",
+      "is_normal": true
+    },
+    {
+      "name": "WBC Count",
+      "result": "6.8",
+      "unit": "x10³/µL",
+      "reference": "4.5-11.0",
+      "is_normal": true
+    },
+    {
+      "name": "Platelet Count",
+      "result": "320",
+      "unit": "x10³/µL",
+      "reference": "150-400",
+      "is_normal": true
+    },
+    {
+      "name": "Fasting Blood Glucose",
+      "result": "112",
+      "unit": "mg/dL",
+      "reference": "70-99",
+      "is_normal": false
+    },
+    {
+      "name": "Creatinine",
+      "result": "0.95",
+      "unit": "mg/dL",
+      "reference": "0.7-1.2",
+      "is_normal": true
+    },
+    {
+      "name": "ALT (SGPT)",
+      "result": "48",
+      "unit": "U/L",
+      "reference": "7-56",
+      "is_normal": true
+    },
+    {
+      "name": "Total Cholesterol",
+      "result": "215",
+      "unit": "mg/dL",
+      "reference": "0-199",
+      "is_normal": false
+    },
+    {
+      "name": "TSH",
+      "result": "2.1",
+      "unit": "mIU/L",
+      "reference": "0.4-4.0",
+      "is_normal": true
+    }
+  ]
+}

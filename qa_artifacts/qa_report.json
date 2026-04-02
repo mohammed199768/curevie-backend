@@ -1,0 +1,177 @@
+{
+  "at": "2026-02-25T06:01:46.273Z",
+  "baseUrl": "http://localhost:5000/api/v1",
+  "mode": "safe",
+  "summary": {
+    "passed": 23,
+    "failed": 0,
+    "skipped": 1,
+    "total": 24,
+    "durationSec": 5.03
+  },
+  "tests": [
+    {
+      "name": "POST /auth/login - Admin login",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /auth/me - Get current admin",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /auth/refresh - token rotation",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /auth/register - New patient",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /services/categories - Create category",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /services - Create service",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /invoices/coupons - Create coupon",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /requests - Guest request (creates invoice)",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /invoices - pick latest invoice id",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [Hemoglobin]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [WBC Count]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [Platelet Count]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [Fasting Blood Glucose]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [Creatinine]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [ALT (SGPT)]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [Total Cholesterol]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /lab - Create [TSH]",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /requests - Create LAB request for medical report",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /requests/:id/results - Add all 8 lab results",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /reports/invoice/:id/pdf - Download invoice PDF",
+      "status": "PASS"
+    },
+    {
+      "name": "GET medical report PDF (auto-discover endpoint)",
+      "status": "PASS"
+    },
+    {
+      "name": "No token → 401 on /patients",
+      "status": "PASS"
+    },
+    {
+      "name": "Invalid token → 401 on /patients",
+      "status": "PASS"
+    },
+    {
+      "name": "Rate limiter (stress) skipped in SAFE mode",
+      "status": "SKIP"
+    }
+  ],
+  "state": {
+    "invoiceId": "48a75062-923f-4e63-bb73-b419b33f4b61",
+    "categoryId": "5c1a587b-ed3a-4ff2-9d33-4658573370e0",
+    "serviceId": "94a73848-3437-411e-805d-33d04eff587e",
+    "labTestIds": [
+      "99b7496e-ed2e-4aea-b55f-d53392559aed",
+      "a1123b2f-ead1-470c-8742-c6fb11cfcc0d",
+      "f1c3d103-aa85-4572-ada5-7c15950abaeb",
+      "8335c322-0322-4d68-bf53-0fc71d2bfa9c",
+      "571aced1-32f9-4a33-8e43-8b480eeb9d30",
+      "23d8b549-0e4c-42c8-95cc-b8a764f8f09d",
+      "52dad2bd-37e6-4b4d-bb60-a2615ed8c5ae",
+      "c621749d-df2d-48e9-af70-6e9493325c83"
+    ],
+    "medicalRequestId": "2089f2c9-593d-4831-b0ce-aae833a8515c"
+  },
+  "labPanel": [
+    {
+      "name": "Hemoglobin",
+      "result": "15.2",
+      "unit": "g/dL",
+      "is_normal": true
+    },
+    {
+      "name": "WBC Count",
+      "result": "6.8",
+      "unit": "x10³/µL",
+      "is_normal": true
+    },
+    {
+      "name": "Platelet Count",
+      "result": "320",
+      "unit": "x10³/µL",
+      "is_normal": true
+    },
+    {
+      "name": "Fasting Blood Glucose",
+      "result": "112",
+      "unit": "mg/dL",
+      "is_normal": false
+    },
+    {
+      "name": "Creatinine",
+      "result": "0.95",
+      "unit": "mg/dL",
+      "is_normal": true
+    },
+    {
+      "name": "ALT (SGPT)",
+      "result": "48",
+      "unit": "U/L",
+      "is_normal": true
+    },
+    {
+      "name": "Total Cholesterol",
+      "result": "215",
+      "unit": "mg/dL",
+      "is_normal": false
+    },
+    {
+      "name": "TSH",
+      "result": "2.1",
+      "unit": "mIU/L",
+      "is_normal": true
+    }
+  ],
+  "artifactsDir": "C:\\Users\\domim\\Desktop\\curevie backend\\qa_artifacts"
+}

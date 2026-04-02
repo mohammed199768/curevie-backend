@@ -1,0 +1,9 @@
+{
+  "at": "2026-02-24T22:57:50.257Z",
+  "status": 429,
+  "ok": false,
+  "data": {
+    "message": "Too many attempts. Please try again after 15 minutes."
+  },
+  "contentType": "application/json; charset=utf-8"
+}
