@@ -49,36 +49,45 @@ app.use(helmet({
 }));
 
 // =============================================
-// CORS - محكوم بـ whitelist
+// CORS - explicit allowed origins
 // =============================================
-const envAllowedOrigins = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const PRODUCTION_ORIGINS = [
+  'https://curevie.net',
+  'https://www.curevie.net',
+  'https://admin.curevie.net',
+  'https://provider.curevie.net',
+];
 
-const defaultDevOrigins = ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002', 'http://localhost:5173']; // FIX: F13 — allow all three local frontend apps to send credentialed auth requests in development.
-const allowedOrigins = Array.from(new Set([
-  ...envAllowedOrigins,
-  ...(process.env.NODE_ENV !== 'production' ? defaultDevOrigins : []),
-]));
+const DEV_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:3002',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+  'http://127.0.0.1:3002',
+];
+
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? PRODUCTION_ORIGINS
+  : [...PRODUCTION_ORIGINS, ...DEV_ORIGINS];
 
 app.use(cors({
   origin: (origin, callback) => {
+    // allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-
-    if (process.env.NODE_ENV !== 'production') {
-      const localhostPattern = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
-      if (localhostPattern.test(origin)) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
     }
-
-    callback(new Error(`CORS: Origin غير مسموح به → ${origin}`));
+    return callback(new Error(`CORS blocked: ${origin}`));
   },
-  methods:              ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders:       ['Content-Type', 'Authorization', 'X-Auth-Role'],
-  exposedHeaders:       ['X-Total-Count'],
-  credentials:          true,
-  optionsSuccessStatus: 200,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Auth-Role',
+    'X-Requested-With',
+  ],
 }));
 
 // =============================================
