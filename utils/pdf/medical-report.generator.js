@@ -3,6 +3,8 @@ const { logger } = require('../logger');
 const { loadMedicalReportPdfData } = require('./report-data');
 const {
   LOGO_PATH,
+  FONT_ARABIC,
+  FONT_ARABIC_BOLD,
   PDF_FONT_REGULAR_CANDIDATES,
   PDF_FONT_BOLD_CANDIDATES,
   getFirstExistingPath,
@@ -17,17 +19,29 @@ const {
 async function buildTemplateAssets() {
   const regularFontPath = getFirstExistingPath(PDF_FONT_REGULAR_CANDIDATES);
   const boldFontPath = getFirstExistingPath(PDF_FONT_BOLD_CANDIDATES);
+  const arabicFontPath = getFirstExistingPath([FONT_ARABIC, regularFontPath].filter(Boolean));
+  const arabicBoldFontPath = getFirstExistingPath([FONT_ARABIC_BOLD, boldFontPath].filter(Boolean));
 
-  const [logoDataUri, regularFontDataUri, boldFontDataUri] = await Promise.all([
+  const [
+    logoDataUri,
+    regularFontDataUri,
+    boldFontDataUri,
+    arabicFontDataUri,
+    arabicBoldFontDataUri,
+  ] = await Promise.all([
     fileToDataUri(LOGO_PATH),
     fileToDataUri(regularFontPath),
     fileToDataUri(boldFontPath),
+    fileToDataUri(arabicFontPath),
+    fileToDataUri(arabicBoldFontPath),
   ]);
 
   return {
     logoDataUri,
     regularFontDataUri,
     boldFontDataUri,
+    arabicFontDataUri,
+    arabicBoldFontDataUri,
   };
 }
 

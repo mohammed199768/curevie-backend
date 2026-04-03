@@ -65,22 +65,77 @@ function normalizePdfText(value, allowUnicode = false) {
   return allowUnicode ? text : text.replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
 }
 
+const RTL_CHAR_PATTERN = /[\u0590-\u08FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+const LTR_CHAR_PATTERN = /[A-Za-z]/;
+const DIGIT_CHAR_PATTERN = /[0-9]/;
+const BIDI_TOKEN_PATTERN = /[\u0590-\u08FF\uFB1D-\uFDFD\uFE70-\uFEFC]+|[A-Za-z0-9]+(?:[/:.,_%+-][A-Za-z0-9]+)*|\s+|./g;
+
+function containsArabicText(value) {
+  return RTL_CHAR_PATTERN.test(String(value || ''));
+}
+
+function detectTextDirection(value) {
+  const normalized = String(value || '');
+
+  for (const char of normalized) {
+    if (RTL_CHAR_PATTERN.test(char)) return 'rtl';
+    if (LTR_CHAR_PATTERN.test(char) || DIGIT_CHAR_PATTERN.test(char)) return 'ltr';
+  }
+
+  return containsArabicText(normalized) ? 'rtl' : 'ltr';
+}
+
+function normalizeOptionalAge(value) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+
+  return Math.max(0, Math.floor(numeric));
+}
+
 async function embedPdfFonts(pdfDoc) {
   try {
     const fontkit = require('@pdf-lib/fontkit');
     const regularPath = getFirstExistingPath(PDF_FONT_REGULAR_CANDIDATES);
     const boldPath = getFirstExistingPath(PDF_FONT_BOLD_CANDIDATES);
+    const arabicPath = getFirstExistingPath([FONT_ARABIC, regularPath].filter(Boolean));
+    const arabicBoldPath = getFirstExistingPath([FONT_ARABIC_BOLD, boldPath].filter(Boolean));
 
     if (regularPath && boldPath) {
       pdfDoc.registerFontkit(fontkit);
-      const [regularBytes, boldBytes] = await Promise.all([
-        fsPromises.readFile(regularPath),
-        fsPromises.readFile(boldPath),
+      const fontBytesCache = new Map();
+      const embeddedFontCache = new Map();
+      const loadFontBytes = async (fontPath) => {
+        if (!fontPath) return null;
+        if (!fontBytesCache.has(fontPath)) {
+          fontBytesCache.set(fontPath, fsPromises.readFile(fontPath));
+        }
+        return fontBytesCache.get(fontPath);
+      };
+      const embedFontByPath = async (fontPath) => {
+        if (!fontPath) return null;
+        if (!embeddedFontCache.has(fontPath)) {
+          embeddedFontCache.set(
+            fontPath,
+            loadFontBytes(fontPath).then((fontBytes) => pdfDoc.embedFont(fontBytes, { subset: true }))
+          );
+        }
+        return embeddedFontCache.get(fontPath);
+      };
+
+      const [font, fontBold, fontArabic, fontArabicBold] = await Promise.all([
+        embedFontByPath(regularPath),
+        embedFontByPath(boldPath),
+        embedFontByPath(arabicPath),
+        embedFontByPath(arabicBoldPath),
       ]);
 
       return {
-        font: await pdfDoc.embedFont(regularBytes, { subset: true }),
-        fontBold: await pdfDoc.embedFont(boldBytes, { subset: true }),
+        font,
+        fontBold,
+        fontArabic: fontArabic || font,
+        fontArabicBold: fontArabicBold || fontBold,
         allowUnicode: true,
       };
     }
@@ -89,6 +144,8 @@ async function embedPdfFonts(pdfDoc) {
   return {
     font: await pdfDoc.embedFont(StandardFonts.Helvetica),
     fontBold: await pdfDoc.embedFont(StandardFonts.HelveticaBold),
+    fontArabic: null,
+    fontArabicBold: null,
     allowUnicode: false,
   };
 }
@@ -130,15 +187,15 @@ function calculateAgeFromDate(dob) {
   const birthDate = new Date(dob);
   if (Number.isNaN(birthDate.getTime())) return null;
 
-  const now = new Date();
-  let age = now.getFullYear() - birthDate.getFullYear();
-  const monthDelta = now.getMonth() - birthDate.getMonth();
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
 
-  if (monthDelta < 0 || (monthDelta === 0 && now.getDate() < birthDate.getDate())) {
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
     age -= 1;
   }
 
-  return age >= 0 ? age : null;
+  return Math.max(0, age);
 }
 
 function getAttachmentFileName(fileUrl) {
@@ -163,14 +220,43 @@ async function loadEmbeddedLogoImage(pdfDoc) {
   }
 }
 
-function createPdfTextToolkit({ font, fontBold, allowUnicode }) {
+function createPdfTextToolkit({
+  font,
+  fontBold,
+  fontArabic = null,
+  fontArabicBold = null,
+  allowUnicode,
+}) {
   const asDisplay = (value, fallback = '-') => {
     if (value === null || value === undefined || value === '') return fallback;
     return normalizePdfText(value, allowUnicode);
   };
 
-  const measureText = (pdfFont, text, size) => {
-    const normalized = asDisplay(text, '');
+  const isBoldFont = (pdfFont) => pdfFont === fontBold || pdfFont === fontArabicBold;
+  const getTokenDirection = (token, fallbackDirection = 'ltr') => {
+    if (containsArabicText(token)) return 'rtl';
+    if (LTR_CHAR_PATTERN.test(token) || DIGIT_CHAR_PATTERN.test(token)) return 'ltr';
+    return fallbackDirection;
+  };
+  const getFontForDirection = (direction, bold = false) => {
+    if (direction === 'rtl') {
+      return bold ? (fontArabicBold || fontBold) : (fontArabic || font);
+    }
+    return bold ? fontBold : font;
+  };
+  const tokenizeLine = (line) => {
+    const normalized = asDisplay(line, '');
+    const fallbackDirection = detectTextDirection(normalized);
+    const tokens = normalized.match(BIDI_TOKEN_PATTERN) || [];
+
+    return tokens.map((token) => ({
+      text: token,
+      direction: getTokenDirection(token, fallbackDirection),
+    }));
+  };
+  const measureFontText = (pdfFont, text, size) => {
+    const normalized = normalizePdfText(text, allowUnicode);
+    if (!normalized) return 0;
 
     try {
       return pdfFont.widthOfTextAtSize(normalized, size);
@@ -178,14 +264,23 @@ function createPdfTextToolkit({ font, fontBold, allowUnicode }) {
       return pdfFont.widthOfTextAtSize(normalizePdfText(normalized, false), size);
     }
   };
+  const measureText = (pdfFont, text, size) => {
+    const normalized = asDisplay(text, '');
+    if (!normalized) return 0;
+
+    const bold = isBoldFont(pdfFont);
+    return tokenizeLine(normalized).reduce((total, token) => {
+      const tokenFont = getFontForDirection(token.direction, bold);
+      return total + measureFontText(tokenFont, token.text, size);
+    }, 0);
+  };
 
   const wrapText = (pdfFont, text, size, maxWidth) => {
-    const normalized = asDisplay(text, '').replace(/\s+/g, ' ').trim();
+    const normalized = asDisplay(text, '').replace(/\r/g, '');
     if (!normalized) return [];
 
-    const words = normalized.split(' ');
+    const paragraphs = normalized.split('\n');
     const lines = [];
-    let current = '';
 
     const pushSplitWord = (token) => {
       let chunk = '';
@@ -201,25 +296,38 @@ function createPdfTextToolkit({ font, fontBold, allowUnicode }) {
       if (chunk) lines.push(chunk);
     };
 
-    for (const word of words) {
-      const candidate = current ? `${current} ${word}` : word;
+    paragraphs.forEach((paragraph, paragraphIndex) => {
+      const collapsed = paragraph.replace(/\s+/g, ' ').trim();
+      if (!collapsed) {
+        if (paragraphIndex < paragraphs.length - 1) lines.push('');
+        return;
+      }
 
-      if (measureText(pdfFont, candidate, size) <= maxWidth) {
-        current = candidate;
-      } else if (!current) {
-        pushSplitWord(word);
-      } else {
-        lines.push(current);
-        if (measureText(pdfFont, word, size) <= maxWidth) {
-          current = word;
-        } else {
+      const words = collapsed.split(' ');
+      let current = '';
+
+      for (const word of words) {
+        const candidate = current ? `${current} ${word}` : word;
+
+        if (measureText(pdfFont, candidate, size) <= maxWidth) {
+          current = candidate;
+        } else if (!current) {
           pushSplitWord(word);
-          current = '';
+        } else {
+          lines.push(current);
+          if (measureText(pdfFont, word, size) <= maxWidth) {
+            current = word;
+          } else {
+            pushSplitWord(word);
+            current = '';
+          }
         }
       }
-    }
 
-    if (current) lines.push(current);
+      if (current) lines.push(current);
+      if (paragraphIndex < paragraphs.length - 1) lines.push('');
+    });
+
     return lines;
   };
 
@@ -246,16 +354,66 @@ function createPdfTextToolkit({ font, fontBold, allowUnicode }) {
     bold = false,
     color = rgb(0, 0, 0),
     lineGap = 13,
+    maxWidth,
+    align = 'left',
   } = {}) => {
     let cursorY = startY;
+
     for (const line of lines) {
-      targetPage.drawText(asDisplay(line, ''), {
-        x,
-        y: cursorY,
-        size,
-        font: bold ? fontBold : font,
-        color,
-      });
+      const normalizedLine = asDisplay(line, '');
+      if (!normalizedLine) {
+        cursorY -= lineGap;
+        continue;
+      }
+
+      const lineDirection = detectTextDirection(normalizedLine);
+      const tokens = tokenizeLine(normalizedLine);
+      const tokenWidths = tokens.map((token) => ({
+        ...token,
+        font: getFontForDirection(token.direction, bold),
+      })).map((token) => ({
+        ...token,
+        width: measureFontText(token.font, token.text, size),
+      }));
+      const resolvedAlign = align === 'auto'
+        ? (lineDirection === 'rtl' ? 'right' : 'left')
+        : align;
+
+      if (resolvedAlign === 'right') {
+        let cursorX = x + (typeof maxWidth === 'number'
+          ? maxWidth
+          : tokenWidths.reduce((total, token) => total + token.width, 0));
+
+        tokenWidths.forEach((token) => {
+          cursorX -= token.width;
+          const drawableText = normalizePdfText(token.text, allowUnicode);
+          if (!drawableText.trim()) return;
+          targetPage.drawText(drawableText, {
+            x: cursorX,
+            y: cursorY,
+            size,
+            font: token.font,
+            color,
+          });
+        });
+      } else {
+        let cursorX = x;
+
+        tokenWidths.forEach((token) => {
+          const drawableText = normalizePdfText(token.text, allowUnicode);
+          if (drawableText.trim()) {
+            targetPage.drawText(drawableText, {
+              x: cursorX,
+              y: cursorY,
+              size,
+              font: token.font,
+              color,
+            });
+          }
+          cursorX += token.width;
+        });
+      }
+
       cursorY -= lineGap;
     }
     return cursorY;
@@ -267,6 +425,9 @@ function createPdfTextToolkit({ font, fontBold, allowUnicode }) {
     wrapText,
     truncateText,
     drawTextLines,
+    containsArabicText,
+    detectTextDirection,
+    normalizeOptionalAge,
   };
 }
 
@@ -282,12 +443,15 @@ module.exports = {
   PDF_FONT_BOLD_CANDIDATES,
   getFirstExistingPath,
   normalizePdfText,
+  containsArabicText,
+  detectTextDirection,
   embedPdfFonts,
   formatPdfDate,
   formatPdfDateTime,
   humanizeEnum,
   getProviderTypeLabel,
   calculateAgeFromDate,
+  normalizeOptionalAge,
   getAttachmentFileName,
   loadEmbeddedLogoImage,
   createPdfTextToolkit,

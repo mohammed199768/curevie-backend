@@ -24,6 +24,15 @@ function normalizeReportValue(value) {
     .toLowerCase();
 }
 
+function normalizeOptionalAge(value) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+
+  return Math.max(0, Math.floor(numeric));
+}
+
 function getClinicalFieldValue(report, field) {
   if (!report) return '';
 
@@ -103,6 +112,11 @@ function dedupeProviderReportsForPdf(reports) {
   }
 
   return reports.filter((report) => !hiddenIds.has(report.id));
+}
+
+function resolvePatientAgeSnapshot(row) {
+  if (row?.patient_date_of_birth) return null;
+  return normalizeOptionalAge(row?.patient_age_snapshot ?? row?.guest_age);
 }
 
 async function loadMedicalReportPdfData(input) {
@@ -253,7 +267,7 @@ async function loadMedicalReportPdfData(input) {
       address: requestRow.patient_address || requestRow.guest_address || '-',
       gender: requestRow.patient_gender || requestRow.guest_gender || null,
       date_of_birth: requestRow.patient_date_of_birth || null,
-      age: requestRow.patient_age_snapshot ?? requestRow.guest_age ?? null,
+      age: resolvePatientAgeSnapshot(requestRow),
     },
     invoice: requestRow.invoice_id
       ? {

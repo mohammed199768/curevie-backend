@@ -7,6 +7,7 @@ const {
   humanizeEnum,
   getProviderTypeLabel,
   calculateAgeFromDate,
+  normalizeOptionalAge,
   getAttachmentFileName,
   loadEmbeddedLogoImage,
   createPdfTextToolkit,
@@ -20,7 +21,13 @@ const {
 async function generateMedicalReportPdf(reportData) {
   reportData = await loadMedicalReportPdfData(reportData);
   const pdfDoc = await PDFDocument.create();
-  const { font, fontBold, allowUnicode } = await embedPdfFonts(pdfDoc);
+  const {
+    font,
+    fontBold,
+    fontArabic,
+    fontArabicBold,
+    allowUnicode,
+  } = await embedPdfFonts(pdfDoc);
 
   const PAGE_W = 595;
   const PAGE_H = 842;
@@ -55,7 +62,13 @@ async function generateMedicalReportPdf(reportData) {
     wrapText,
     truncateText,
     drawTextLines,
-  } = createPdfTextToolkit({ font, fontBold, allowUnicode });
+  } = createPdfTextToolkit({
+    font,
+    fontBold,
+    fontArabic,
+    fontArabicBold,
+    allowUnicode,
+  });
 
   const serviceName = request.service_name || humanizeEnum(request.service_type) || 'Care Service';
   const serviceSummaryText = request.service_description || request.notes || 'No additional package or service notes were provided.';
@@ -65,7 +78,7 @@ async function generateMedicalReportPdf(reportData) {
     || '-';
   const providerRole = getProviderTypeLabel(primaryReport?.provider_type || request.provider_type || request.lead_provider_type);
   const issuedAt = reportMeta.reviewed_at || reportMeta.published_at || request.closed_at || request.completed_at || new Date();
-  const patientAge = patient.age != null ? patient.age : calculateAgeFromDate(patient.date_of_birth);
+  const patientAge = calculateAgeFromDate(patient.date_of_birth) ?? normalizeOptionalAge(patient.age);
   const patientAgeLine = patientAge != null ? `${patientAge} years` : '-';
   const patientDobLine = patient.date_of_birth ? formatPdfDate(patient.date_of_birth) : '-';
   const patientGenderLine = humanizeEnum(patient.gender);
@@ -98,6 +111,27 @@ async function generateMedicalReportPdf(reportData) {
       size,
       font: fontBold,
       color: textColor,
+    });
+  }
+
+  function drawDynamicText(targetPage, text, x, startY, width, {
+    size = 10,
+    bold = false,
+    color = C.ink,
+    lineGap = size + 2,
+    maxLines = null,
+    forceAlign = 'auto',
+  } = {}) {
+    const wrappedLines = wrapText(bold ? fontBold : font, text, size, width);
+    const lines = (wrappedLines.length ? wrappedLines : [asDisplay(text)]).slice(0, maxLines || wrappedLines.length || 1);
+
+    return drawTextLines(targetPage, lines, x, startY, {
+      size,
+      bold,
+      color,
+      lineGap,
+      maxWidth: width,
+      align: forceAlign,
     });
   }
 
@@ -253,13 +287,20 @@ async function generateMedicalReportPdf(reportData) {
 
     const subtitle = compact
       ? `Generated ${formatPdfDateTime(issuedAt)}`
-      : `${serviceName} - ${humanizeEnum(request.request_type || request.service_type)}`;
-    const subtitleLines = wrapText(font, subtitle, compact ? 9 : 10, PAGE_W - (MARGIN * 2) - 110);
-    drawTextLines(targetPage, subtitleLines, MARGIN + (logoImage ? 86 : 0), PAGE_H - headerHeight + (compact ? 38 : 78), {
-      size: compact ? 9 : 10,
-      color: rgb(0.93, 0.96, 0.94),
-      lineGap: 11,
-    });
+      : serviceName;
+    drawDynamicText(
+      targetPage,
+      subtitle,
+      MARGIN + (logoImage ? 86 : 0),
+      PAGE_H - headerHeight + (compact ? 38 : 78),
+      PAGE_W - (MARGIN * 2) - 110,
+      {
+        size: compact ? 9 : 10,
+        color: rgb(0.93, 0.96, 0.94),
+        lineGap: 11,
+        maxLines: compact ? 1 : 2,
+      }
+    );
 
     const metaBoxW = compact ? 150 : 194;
     const metaBoxX = PAGE_W - MARGIN - metaBoxW;
@@ -277,8 +318,6 @@ async function generateMedicalReportPdf(reportData) {
 
     metaRows.forEach(([label, value], rowIndex) => {
       const rowY = metaBaseY - (rowIndex * 18);
-      const wrappedValue = wrapText(font, value, 8.7, metaBoxW - 84);
-      const metaValue = truncateText(font, wrappedValue[0] || value, 8.7, metaBoxW - 84);
       targetPage.drawText(`${label.toUpperCase()}`, {
         x: metaBoxX + 14,
         y: rowY,
@@ -286,12 +325,11 @@ async function generateMedicalReportPdf(reportData) {
         font: fontBold,
         color: rgb(0.78, 0.87, 0.83),
       });
-      targetPage.drawText(metaValue, {
-        x: metaBoxX + 68,
-        y: rowY,
+      drawDynamicText(targetPage, value, metaBoxX + 68, rowY, metaBoxW - 84, {
         size: 8.7,
-        font,
         color: C.white,
+        lineGap: 10,
+        maxLines: 1,
       });
     });
 
@@ -406,6 +444,8 @@ async function generateMedicalReportPdf(reportData) {
       bold: true,
       color: C.brandSecondary,
       lineGap: 19,
+      maxWidth: innerWidth,
+      align: 'auto',
     });
     cursorY -= 4;
 
@@ -422,6 +462,8 @@ async function generateMedicalReportPdf(reportData) {
         size: 9.5,
         color: C.ink,
         lineGap: 11,
+        maxWidth: innerWidth - 84,
+        align: 'auto',
       });
       cursorY -= Math.max(15, valueLines.length * 11 + 3);
     });
@@ -439,6 +481,8 @@ async function generateMedicalReportPdf(reportData) {
         size: 9.5,
         color: C.muted,
         lineGap: 12,
+        maxWidth: innerWidth,
+        align: 'auto',
       });
     }
   }
@@ -474,12 +518,12 @@ async function generateMedicalReportPdf(reportData) {
       font: fontBold,
       color: rgb(0.84, 0.91, 0.88),
     });
-    page.drawText(truncateText(fontBold, providerName, 19, CONTENT_W - 180), {
-      x: MARGIN + 22,
-      y: y - 24,
+    drawDynamicText(page, providerName, MARGIN + 22, y - 24, CONTENT_W - 180, {
       size: 19,
-      font: fontBold,
+      bold: true,
       color: C.white,
+      lineGap: 19,
+      maxLines: 2,
     });
 
     const providerMeta = `${providerRole}${primaryReport?.updated_at ? ` - Updated ${formatPdfDateTime(primaryReport.updated_at)}` : ''}`;
@@ -488,6 +532,7 @@ async function generateMedicalReportPdf(reportData) {
       size: 10,
       color: rgb(0.88, 0.93, 0.91),
       lineGap: 12,
+      maxWidth: CONTENT_W - 184,
     });
 
     drawPill(page, humanizeEnum(primaryReport?.report_type || 'FINAL_REPORT'), PAGE_W - MARGIN - 114, y - 16, {
@@ -500,6 +545,8 @@ async function generateMedicalReportPdf(reportData) {
       size: 8.8,
       color: rgb(0.89, 0.93, 0.92),
       lineGap: 10,
+      maxWidth: 104,
+      align: 'auto',
     });
 
     y -= 106;
@@ -543,7 +590,7 @@ async function generateMedicalReportPdf(reportData) {
 
   function drawNarrativeRow(label, value) {
     const labelLines = wrapText(fontBold, label.toUpperCase(), 8.5, CONTENT_W);
-    const valueLines = wrapText(font, value, 10.5, CONTENT_W);
+    const valueLines = wrapText(font, value, 10.5, CONTENT_W - 40);
     const rowHeight = Math.max(82, (labelLines.length * 11) + (valueLines.length * 14) + 30);
 
     ensureSpace(rowHeight + 8);
@@ -571,11 +618,14 @@ async function generateMedicalReportPdf(reportData) {
       bold: true,
       color: C.brandOlive,
       lineGap: 11,
+      maxWidth: CONTENT_W - 40,
     });
     drawTextLines(page, valueLines.length ? valueLines : ['-'], MARGIN + 20, y - 42, {
       size: 10.5,
       color: C.ink,
       lineGap: 14,
+      maxWidth: CONTENT_W - 40,
+      align: 'auto',
     });
     y -= rowHeight + 12;
   }
@@ -600,18 +650,19 @@ async function generateMedicalReportPdf(reportData) {
       height: 44,
       color: C.brandAccent,
     });
-    page.drawText(truncateText(fontBold, reportTitle, 13, CONTENT_W - 148), {
-      x: MARGIN + 18,
-      y: y - 17,
+    drawDynamicText(page, reportTitle, MARGIN + 18, y - 17, CONTENT_W - 148, {
       size: 13,
-      font: fontBold,
+      bold: true,
       color: C.white,
+      lineGap: 13,
+      maxLines: 1,
     });
     const reportMetaLines = wrapText(font, reportMetaText, 8.8, CONTENT_W - 150);
     drawTextLines(page, reportMetaLines, MARGIN + 18, y - 30, {
       size: 8.8,
       color: rgb(0.9, 0.94, 0.92),
       lineGap: 10,
+      maxWidth: CONTENT_W - 150,
     });
     drawPill(page, humanizeEnum(report?.status || 'SUBMITTED'), PAGE_W - MARGIN - 88, y - 28, {
       bg: rgb(1, 1, 1),
@@ -686,12 +737,12 @@ async function generateMedicalReportPdf(reportData) {
       color: C.brandAccent,
     });
 
-    page.drawText(asDisplay(result.test_name || 'Lab Result'), {
-      x: MARGIN + 14,
-      y: y - 28,
+    drawDynamicText(page, result.test_name || 'Lab Result', MARGIN + 14, y - 28, CONTENT_W - 120, {
       size: 12,
-      font: fontBold,
+      bold: true,
       color: C.brandSecondary,
+      lineGap: 12,
+      maxLines: 1,
     });
 
     const pillText = humanizeEnum(flag);
@@ -713,31 +764,52 @@ async function generateMedicalReportPdf(reportData) {
       color: flagStyle.text,
     });
 
-    page.drawText(`Result: ${asDisplay(resultText)}`, {
+    page.drawText('Result', {
       x: MARGIN + 14,
       y: y - 48,
-      size: 9.5,
-      font,
-      color: C.ink,
-    });
-    page.drawText(`Reference: ${asDisplay(referenceValue)}`, {
-      x: MARGIN + 14,
-      y: y - 62,
-      size: 9.5,
-      font,
+      size: 9,
+      font: fontBold,
       color: C.muted,
     });
-    page.drawText(`Captured: ${formatPdfDateTime(result.created_at)}`, {
+    drawDynamicText(page, resultText, MARGIN + 82, y - 48, CONTENT_W - 96, {
+      size: 9.5,
+      color: C.ink,
+      lineGap: 11,
+      maxLines: 1,
+    });
+    page.drawText('Reference', {
+      x: MARGIN + 14,
+      y: y - 62,
+      size: 9,
+      font: fontBold,
+      color: C.muted,
+    });
+    drawDynamicText(page, referenceValue, MARGIN + 82, y - 62, CONTENT_W - 96, {
+      size: 9.5,
+      color: C.muted,
+      lineGap: 11,
+      maxLines: 1,
+    });
+    page.drawText('Captured', {
       x: MARGIN + 14,
       y: y - 76,
       size: 9,
-      font,
+      font: fontBold,
       color: C.muted,
+    });
+    drawDynamicText(page, formatPdfDateTime(result.created_at), MARGIN + 82, y - 76, CONTENT_W - 96, {
+      size: 9,
+      color: C.muted,
+      lineGap: 11,
+      maxLines: 1,
+      forceAlign: 'left',
     });
     drawTextLines(page, notesLines, MARGIN + 14, y - 94, {
       size: 9.5,
       color: C.ink,
       lineGap: 12,
+      maxWidth: CONTENT_W - 28,
+      align: 'auto',
     });
 
     y -= cardHeight + 12;
@@ -745,7 +817,7 @@ async function generateMedicalReportPdf(reportData) {
 
   addPage({ compact: false });
 
-  const topCardHeight = 224;
+  const topCardHeight = 244;
   const gap = 14;
   const serviceCardWidth = Math.round((CONTENT_W * 0.58) * 10) / 10;
   const patientCardWidth = CONTENT_W - gap - serviceCardWidth;

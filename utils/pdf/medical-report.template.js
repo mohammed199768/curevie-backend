@@ -42,19 +42,125 @@ function formatDateTime(value) {
 
 function calculateAge(dateOfBirth) {
   if (!dateOfBirth) return null;
-  const birthDate = new Date(dateOfBirth);
-  if (Number.isNaN(birthDate.getTime())) return null;
+  const dob = new Date(dateOfBirth);
+  if (Number.isNaN(dob.getTime())) return null;
 
-  const now = new Date();
-  let age = now.getFullYear() - birthDate.getFullYear();
-  if (
-    now.getMonth() - birthDate.getMonth() < 0 ||
-    (now.getMonth() === birthDate.getMonth() && now.getDate() < birthDate.getDate())
-  ) {
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const monthDiff = today.getMonth() - dob.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
     age -= 1;
   }
 
-  return age >= 0 ? age : null;
+  return Math.max(0, age);
+}
+
+function normalizeOptionalAge(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.floor(numeric));
+}
+
+function resolvePatientAge(patient = {}) {
+  return calculateAge(patient.date_of_birth) ?? normalizeOptionalAge(patient.age);
+}
+
+const RTL_CHAR_PATTERN = /[\u0590-\u08FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+const LTR_CHAR_PATTERN = /[A-Za-z]/;
+const DIGIT_CHAR_PATTERN = /[0-9]/;
+const BIDI_TOKEN_PATTERN = /[\u0590-\u08FF\uFB1D-\uFDFD\uFE70-\uFEFC]+|[A-Za-z0-9]+(?:[/:.,_%+-][A-Za-z0-9]+)*|\s+|./g;
+
+function containsArabicText(value) {
+  return RTL_CHAR_PATTERN.test(String(value || ''));
+}
+
+function detectTextDirection(value) {
+  const normalized = String(value || '');
+
+  for (const char of normalized) {
+    if (RTL_CHAR_PATTERN.test(char)) return 'rtl';
+    if (LTR_CHAR_PATTERN.test(char) || DIGIT_CHAR_PATTERN.test(char)) return 'ltr';
+  }
+
+  return containsArabicText(normalized) ? 'rtl' : 'ltr';
+}
+
+function joinClasses(...classes) {
+  return classes.filter(Boolean).join(' ');
+}
+
+function renderInlineSegments(value, fallbackDirection = 'ltr') {
+  const tokens = String(value || '').match(BIDI_TOKEN_PATTERN) || [];
+
+  return tokens.map((token) => {
+    if (/^\s+$/.test(token)) return token;
+
+    const direction = containsArabicText(token)
+      ? 'rtl'
+      : (LTR_CHAR_PATTERN.test(token) || DIGIT_CHAR_PATTERN.test(token) ? 'ltr' : fallbackDirection);
+
+    return `<bdi dir="${direction}" class="${joinClasses('text-fragment', direction === 'rtl' ? 'arabic-text' : 'latin-text')}">${escapeHtml(token)}</bdi>`;
+  }).join('');
+}
+
+function renderTextBlock(value, {
+  fallback = '-',
+  className = '',
+  multiline = true,
+  dir = 'auto',
+} = {}) {
+  const rawValue = value === null || value === undefined ? '' : String(value).replace(/\r/g, '');
+  const trimmed = rawValue.trim();
+  const content = trimmed || fallback;
+  const lines = content.split('\n');
+  const baseDirection = dir === 'auto' ? detectTextDirection(content) : dir;
+
+  return `
+    <div class="${joinClasses('text-block', baseDirection === 'rtl' ? 'rtl-block' : 'ltr-block', multiline ? 'multiline-block' : 'singleline-block', className)}" dir="${baseDirection}">
+      ${lines.map((line) => {
+        const lineDirection = line.trim() ? detectTextDirection(line) : baseDirection;
+        return `<div class="${joinClasses('text-line', multiline ? 'multiline-line' : 'singleline-line', lineDirection === 'rtl' ? 'rtl-line' : 'ltr-line')}" dir="${lineDirection}">${line.trim() ? renderInlineSegments(line, lineDirection) : '&nbsp;'}</div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderFieldRows(fields = []) {
+  return `
+    <div class="field-list">
+      ${fields.map((field) => `
+        <div class="field-row">
+          <div class="field-label">${escapeHtml(field.label)}</div>
+          <div class="${joinClasses('field-value', field.valueClass)}">
+            ${renderTextBlock(field.value, {
+              multiline: field.multiline !== false,
+              className: field.blockClass || '',
+              dir: field.dir || 'auto',
+            })}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderHeroMetaRow(label, value, dir = 'auto') {
+  return `
+    <div class="hero-meta-row">
+      <span class="hero-meta-label">${escapeHtml(label)}</span>
+      <div class="hero-meta-value">${renderTextBlock(value, { multiline: false, dir })}</div>
+    </div>
+  `;
+}
+
+function renderLabStat(label, value, dir = 'auto') {
+  return `
+    <div class="lab-stat">
+      <span class="lab-stat-label">${escapeHtml(label)}</span>
+      <div class="lab-stat-value">${renderTextBlock(value, { multiline: false, dir })}</div>
+    </div>
+  `;
 }
 
 function resolveLabFlag(result) {
@@ -87,6 +193,26 @@ function buildFontFaceCss(assets = {}) {
       }
     `);
   }
+  if (assets.arabicFontDataUri) {
+    entries.push(`
+      @font-face {
+        font-family: 'ReportArabic';
+        font-weight: 400;
+        font-style: normal;
+        src: url('${assets.arabicFontDataUri}') format('truetype');
+      }
+    `);
+  }
+  if (assets.arabicBoldFontDataUri) {
+    entries.push(`
+      @font-face {
+        font-family: 'ReportArabic';
+        font-weight: 700;
+        font-style: normal;
+        src: url('${assets.arabicBoldFontDataUri}') format('truetype');
+      }
+    `);
+  }
   return entries.join('\n');
 }
 
@@ -107,6 +233,7 @@ function renderProviderReport(report) {
   const role = getProviderTypeLabel(report.provider_type);
   const status = humanizeEnum(report.status || 'Submitted');
   const type = humanizeEnum(report.report_type || 'Report');
+  const updatedAt = report.updated_at ? formatDateTime(report.updated_at) : null;
 
   const fields = [];
   const pushField = (label, value) => {
@@ -138,8 +265,12 @@ function renderProviderReport(report) {
     <div class="provider-block">
       <div class="provider-block-header">
         <div class="provider-block-meta">
-          <span class="provider-block-name">${escapeHtml(report.provider_name || '-')}</span>
-          <span class="provider-block-role">${escapeHtml(`${role} - ${type} - ${formatDateTime(report.updated_at)}`)}</span>
+          ${renderTextBlock(report.provider_name || '-', {
+            multiline: false,
+            className: 'provider-block-name',
+          })}
+          <span class="provider-block-role">${escapeHtml(`${role} - ${type}`)}</span>
+          ${updatedAt ? `<span class="provider-block-role provider-block-updated">Updated ${escapeHtml(updatedAt)}</span>` : ''}
         </div>
         <span class="status-badge">${escapeHtml(status)}</span>
       </div>
@@ -149,13 +280,17 @@ function renderProviderReport(report) {
             ? fields.map((field) => `
               <div class="narrative-row">
                 <div class="narrative-label">${escapeHtml(field.label)}</div>
-                <div class="narrative-value">${escapeMultilineHtml(field.value)}</div>
+                <div class="narrative-value">${renderTextBlock(field.value, { multiline: true, className: 'narrative-copy' })}</div>
               </div>
             `).join('')
             : `
               <div class="narrative-row">
                 <div class="narrative-label">Summary</div>
-                <div class="narrative-value muted-text">No clinical notes were submitted for this report block.</div>
+                <div class="narrative-value">${renderTextBlock('No clinical notes were submitted for this report block.', {
+                  multiline: true,
+                  className: 'narrative-copy muted-text',
+                  dir: 'ltr',
+                })}</div>
               </div>
             `
         }
@@ -188,23 +323,17 @@ function renderLabCard(result) {
   return `
     <div class="lab-card flag-card-${flag.toLowerCase()}">
       <div class="lab-card-header">
-        <span class="lab-card-name">${escapeHtml(result.test_name || 'Lab Result')}</span>
+        <div class="lab-card-name">${renderTextBlock(result.test_name || 'Lab Result', {
+          multiline: false,
+          className: 'lab-card-name-copy',
+        })}</div>
         ${renderLabFlag(flag)}
       </div>
       <div class="lab-card-body">
-        <div class="lab-stat">
-          <span class="lab-stat-label">Result</span>
-          <span class="lab-stat-value">${escapeHtml(resultText)}</span>
-        </div>
-        <div class="lab-stat">
-          <span class="lab-stat-label">Reference</span>
-          <span class="lab-stat-value">${escapeHtml(referenceText)}</span>
-        </div>
-        <div class="lab-stat">
-          <span class="lab-stat-label">Captured</span>
-          <span class="lab-stat-value">${escapeHtml(formatDateTime(result.created_at))}</span>
-        </div>
-        ${result.notes ? `<div class="lab-note">${escapeMultilineHtml(result.notes)}</div>` : ''}
+        ${renderLabStat('Result', resultText)}
+        ${renderLabStat('Reference', referenceText)}
+        ${renderLabStat('Captured', formatDateTime(result.created_at), 'ltr')}
+        ${result.notes ? `<div class="lab-note">${renderTextBlock(result.notes, { multiline: true, className: 'lab-note-copy' })}</div>` : ''}
       </div>
     </div>
   `;
@@ -214,8 +343,11 @@ function renderAttachmentRow(report) {
   return `
     <div class="attachment-row">
       <div class="attachment-icon">PDF</div>
-      <div>
-        <div class="attachment-name">${escapeHtml(report.provider_name || 'Provider Attachment')}</div>
+      <div class="attachment-body">
+        <div class="attachment-name">${renderTextBlock(report.provider_name || 'Provider Attachment', {
+          multiline: false,
+          className: 'attachment-name-copy',
+        })}</div>
         <div class="attachment-meta">${escapeHtml(`${getProviderTypeLabel(report.provider_type)} uploaded a diagnostic document that is appended after this report.`)}</div>
       </div>
     </div>
@@ -238,7 +370,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
   const providerName = primaryReport?.provider_name || request.provider_name || request.lead_provider_name || '-';
   const providerRole = getProviderTypeLabel(primaryReport?.provider_type || request.provider_type || request.lead_provider_type);
   const issuedAt = reportMeta.reviewed_at || reportMeta.published_at || request.closed_at || request.completed_at || new Date();
-  const patientAge = patient.age != null ? patient.age : calculateAge(patient.date_of_birth);
+  const patientAge = resolvePatientAge(patient);
   const reportNumber = request.id ? request.id.slice(0, 8).toUpperCase() : '-';
   const generatedAt = new Date().toLocaleString('en-GB');
 
@@ -258,15 +390,56 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     html, body {
       background: #eef1ed;
       color: #131f1e;
-      font-family: 'ReportSans', 'Trebuchet MS', 'Segoe UI', Arial, sans-serif;
-      font-size: 10pt;
-      line-height: 1.5;
+      font-family: 'ReportSans', 'ReportArabic', 'Noto Naskh Arabic', 'Trebuchet MS', 'Segoe UI', Arial, sans-serif;
+      direction: ltr;
+      font-size: 13px;
+      line-height: 1.6;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
 
     @page { size: A4; margin: 0; }
     .page-shell { padding: 14px; }
+    .text-block, .text-line {
+      max-width: 100%;
+      min-width: 0;
+    }
+    .text-line {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      unicode-bidi: plaintext;
+    }
+    .multiline-line {
+      white-space: pre-wrap;
+    }
+    .singleline-line {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .rtl-block, .rtl-line {
+      direction: rtl;
+      text-align: right;
+    }
+    .ltr-block, .ltr-line {
+      direction: ltr;
+      text-align: left;
+    }
+    .text-fragment {
+      unicode-bidi: isolate;
+    }
+    .arabic-text {
+      direction: rtl;
+      text-align: right;
+      unicode-bidi: embed;
+      font-family: 'ReportArabic', 'Noto Naskh Arabic', Arial, sans-serif;
+    }
+    .latin-text {
+      direction: ltr;
+      text-align: left;
+      unicode-bidi: isolate;
+      font-family: 'ReportSans', 'Segoe UI', Arial, sans-serif;
+    }
     .report-page {
       background: #f7faf7;
       border-radius: 20px;
@@ -330,9 +503,11 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       margin-bottom: 8px;
     }
     .hero-service {
-      font-size: 10pt;
       color: #9fccc0;
       max-width: 360px;
+    }
+    .hero-service .text-line {
+      font-size: 10pt;
     }
     .hero-meta-box {
       background: rgba(255,255,255,0.06);
@@ -358,9 +533,11 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       margin-bottom: 2px;
     }
     .hero-meta-value {
-      font-size: 8.5pt;
       color: #ffffff;
       font-weight: 400;
+    }
+    .hero-meta-value .text-line {
+      font-size: 8.5pt;
     }
 
     .report-body { padding: 32px 38px 38px; }
@@ -396,37 +573,57 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     }
     .overview-card-tag.gold-tag { color: #7a5a0a; background: #f7f0dc; }
     .overview-card-headline {
+      margin-bottom: 14px;
+    }
+    .overview-card-headline .text-line {
       font-size: 15pt;
       font-weight: 700;
       color: #0d4440;
       line-height: 1.2;
-      margin-bottom: 14px;
     }
-    .kv-list {
-      width: 100%;
-      border-collapse: collapse;
+    .field-list {
+      display: flex;
+      flex-direction: column;
       margin-bottom: 12px;
     }
-    .kv-list td {
-      padding: 4px 0;
-      vertical-align: top;
-      font-size: 8.5pt;
+    .field-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 6px 0;
+      border-bottom: 1px solid #f1f5f9;
     }
-    .kv-label {
-      color: #617270;
+    .field-row:last-child {
+      border-bottom: none;
+    }
+    .field-label {
+      color: #64748b;
+      font-size: 12px;
+      min-width: 140px;
       font-weight: 700;
-      width: 40%;
-      padding-right: 10px;
-      white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
-    .kv-value { color: #131f1e; }
+    .field-value {
+      flex: 1;
+      min-width: 0;
+    }
+    .field-value .rtl-block,
+    .field-value .ltr-block {
+      text-align: right;
+    }
+    .field-value .text-line {
+      font-size: 9pt;
+      font-weight: 500;
+      color: #131f1e;
+    }
     .overview-note {
-      font-size: 8pt;
-      color: #617270;
       border-top: 1px solid #e4ece3;
       padding-top: 10px;
-      line-height: 1.5;
-      overflow-wrap: anywhere;
+    }
+    .overview-note .text-line {
+      font-size: 8pt;
+      color: #617270;
     }
 
     .provider-banner {
@@ -459,10 +656,12 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       margin-bottom: 4px;
     }
     .provider-banner-name {
+      margin-bottom: 4px;
+    }
+    .provider-banner-name .text-line {
       font-size: 17pt;
       font-weight: 700;
       color: #ffffff;
-      margin-bottom: 4px;
     }
     .provider-banner-meta { font-size: 9pt; color: #9fccc0; }
     .provider-banner-badge {
@@ -540,6 +739,8 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     .provider-block-meta { padding-left: 14px; }
     .provider-block-name {
       display: block;
+    }
+    .provider-block-name .text-line {
       font-size: 11.5pt;
       font-weight: 700;
       color: #ffffff;
@@ -549,6 +750,9 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       font-size: 8pt;
       color: #9fccc0;
       margin-top: 2px;
+    }
+    .provider-block-updated {
+      opacity: 0.9;
     }
     .status-badge {
       background: rgba(255,255,255,0.15);
@@ -585,10 +789,11 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     }
     .narrative-value {
       padding: 11px 16px;
+    }
+    .narrative-copy .text-line {
       font-size: 9.5pt;
       color: #131f1e;
       line-height: 1.55;
-      overflow-wrap: anywhere;
     }
     .muted-text {
       color: #8fa8a5;
@@ -614,6 +819,11 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       border-bottom: 1px solid #edf1ec;
     }
     .lab-card-name {
+      display: block;
+      flex: 1;
+      min-width: 0;
+    }
+    .lab-card-name-copy .text-line {
       font-size: 11pt;
       font-weight: 700;
       color: #0d4440;
@@ -622,7 +832,8 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     .lab-stat {
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: flex-start;
+      gap: 12px;
       margin-bottom: 6px;
     }
     .lab-stat:last-child { margin-bottom: 0; }
@@ -634,19 +845,28 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       letter-spacing: 0.06em;
     }
     .lab-stat-value {
+      display: block;
+      max-width: 65%;
+      flex: 1;
+      min-width: 0;
+    }
+    .lab-stat-value .rtl-block,
+    .lab-stat-value .ltr-block {
+      text-align: right;
+    }
+    .lab-stat-value .text-line {
       font-size: 9pt;
       color: #131f1e;
-      text-align: right;
-      max-width: 65%;
     }
     .lab-note {
       margin-top: 10px;
       padding-top: 10px;
       border-top: 1px solid #edf1ec;
+    }
+    .lab-note-copy .text-line {
       font-size: 8.5pt;
       color: #617270;
       line-height: 1.5;
-      overflow-wrap: anywhere;
     }
 
     .flag-card-normal   { border-left: 5px solid #3b7a42; }
@@ -672,7 +892,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
 
     .attachment-row {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 12px;
       padding: 12px 16px;
       background: #ffffff;
@@ -693,7 +913,11 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       font-weight: 700;
       color: #4e7a3c;
     }
-    .attachment-name {
+    .attachment-body {
+      min-width: 0;
+      flex: 1;
+    }
+    .attachment-name-copy .text-line {
       font-size: 9pt;
       font-weight: 700;
       color: #0d4440;
@@ -721,9 +945,10 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       margin-bottom: 4px;
     }
     .report-certification-copy {
-      font-size: 8.5pt;
       color: #4e5c5a;
-      overflow-wrap: anywhere;
+    }
+    .report-certification-copy .text-line {
+      font-size: 8.5pt;
     }
     .report-certification-note {
       font-size: 8pt;
@@ -840,25 +1065,13 @@ function renderMedicalReportHtml(reportData, assets = {}) {
           ${logoHtml}
           <div class="hero-subtitle">Clinical Record</div>
           <div class="hero-title">Comprehensive<br />Medical Report</div>
-          <div class="hero-service">${escapeHtml(`${serviceName} - ${humanizeEnum(request.request_type || request.service_type)}`)}</div>
+          <div class="hero-service">${renderTextBlock(serviceName, { multiline: false })}</div>
         </div>
         <div class="hero-meta-box">
-          <div class="hero-meta-row">
-            <span class="hero-meta-label">Document</span>
-            <span class="hero-meta-value">Confidential Report</span>
-          </div>
-          <div class="hero-meta-row">
-            <span class="hero-meta-label">Issued</span>
-            <span class="hero-meta-value">${escapeHtml(formatDate(issuedAt))}</span>
-          </div>
-          <div class="hero-meta-row">
-            <span class="hero-meta-label">Provider</span>
-            <span class="hero-meta-value">${escapeHtml(providerName)}</span>
-          </div>
-          <div class="hero-meta-row">
-            <span class="hero-meta-label">Ref #</span>
-            <span class="hero-meta-value">${escapeHtml(reportNumber)}</span>
-          </div>
+          ${renderHeroMetaRow('Document', 'Confidential Report', 'ltr')}
+          ${renderHeroMetaRow('Issued', formatDate(issuedAt), 'ltr')}
+          ${renderHeroMetaRow('Provider', providerName)}
+          ${renderHeroMetaRow('Ref #', reportNumber, 'ltr')}
         </div>
       </div>
     </header>
@@ -869,14 +1082,14 @@ function renderMedicalReportHtml(reportData, assets = {}) {
           <div class="overview-card-accent"></div>
           <div class="overview-card-inner">
             <span class="overview-card-tag">${request.request_type === 'PACKAGE' ? 'Package Overview' : 'Service Overview'}</span>
-            <div class="overview-card-headline">${escapeHtml(serviceName)}</div>
-            <table class="kv-list">
-              <tr><td class="kv-label">Request Type</td><td class="kv-value">${escapeHtml(humanizeEnum(request.request_type))}</td></tr>
-              <tr><td class="kv-label">Service Type</td><td class="kv-value">${escapeHtml(humanizeEnum(request.service_type))}</td></tr>
-              <tr><td class="kv-label">Category</td><td class="kv-value">${escapeHtml(request.service_category_name || '-')}</td></tr>
-              <tr><td class="kv-label">Scheduled</td><td class="kv-value">${escapeHtml(formatDateTime(request.scheduled_at || request.requested_at))}</td></tr>
-            </table>
-            <div class="overview-note">${escapeMultilineHtml(serviceDescription)}</div>
+            <div class="overview-card-headline">${renderTextBlock(serviceName, { multiline: true })}</div>
+            ${renderFieldRows([
+              { label: 'Request Type', value: humanizeEnum(request.request_type), multiline: false, dir: 'ltr' },
+              { label: 'Service Type', value: humanizeEnum(request.service_type), multiline: false, dir: 'ltr' },
+              { label: 'Category', value: request.service_category_name || '-', multiline: true },
+              { label: 'Scheduled', value: formatDateTime(request.scheduled_at || request.requested_at), multiline: false, dir: 'ltr' },
+            ])}
+            <div class="overview-note">${renderTextBlock(serviceDescription, { multiline: true })}</div>
           </div>
         </div>
 
@@ -884,14 +1097,14 @@ function renderMedicalReportHtml(reportData, assets = {}) {
           <div class="overview-card-accent gold"></div>
           <div class="overview-card-inner">
             <span class="overview-card-tag gold-tag">Patient Information</span>
-            <div class="overview-card-headline">${escapeHtml(patient.full_name || 'Patient')}</div>
-            <table class="kv-list">
-              <tr><td class="kv-label">Phone</td><td class="kv-value">${escapeHtml(patient.phone || '-')}</td></tr>
-              <tr><td class="kv-label">Gender</td><td class="kv-value">${escapeHtml(humanizeEnum(patient.gender))}</td></tr>
-              <tr><td class="kv-label">Age</td><td class="kv-value">${escapeHtml(patientAge != null ? `${patientAge} years` : '-')}</td></tr>
-              <tr><td class="kv-label">Date of Birth</td><td class="kv-value">${escapeHtml(formatDate(patient.date_of_birth))}</td></tr>
-            </table>
-            <div class="overview-note">${escapeMultilineHtml(patient.address || patient.email || 'No additional contact details.')}</div>
+            <div class="overview-card-headline">${renderTextBlock(patient.full_name || 'Patient', { multiline: true })}</div>
+            ${renderFieldRows([
+              { label: 'Phone', value: patient.phone || '-', multiline: false, dir: 'ltr' },
+              { label: 'Gender', value: humanizeEnum(patient.gender), multiline: false, dir: 'ltr' },
+              { label: 'Age', value: patientAge != null ? `${patientAge} years` : '-', multiline: false, dir: 'ltr' },
+              { label: 'Date of Birth', value: formatDate(patient.date_of_birth), multiline: false, dir: 'ltr' },
+            ])}
+            <div class="overview-note">${renderTextBlock(patient.address || patient.email || 'No additional contact details.', { multiline: true })}</div>
           </div>
         </div>
       </div>
@@ -899,7 +1112,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       <div class="provider-banner">
         <div class="provider-banner-left">
           <div class="provider-banner-caption">Assigned Provider</div>
-          <div class="provider-banner-name">${escapeHtml(providerName)}</div>
+          <div class="provider-banner-name">${renderTextBlock(providerName, { multiline: false })}</div>
           <div class="provider-banner-meta">${escapeHtml(`${providerRole}${primaryReport?.updated_at ? ` - Updated ${formatDateTime(primaryReport.updated_at)}` : ''}`)}</div>
         </div>
         <div class="provider-banner-badge">${escapeHtml(humanizeEnum(primaryReport?.report_type || 'Final Report'))}</div>
@@ -973,11 +1186,11 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       <section class="report-section">
         <div class="report-certification">
           <div class="report-certification-title">Report Certification</div>
-          <div class="report-certification-copy">
-            Approved by <strong>${escapeHtml(reportMeta.admin_name || '-')}</strong> -
-            Reviewed ${escapeHtml(formatDateTime(reportMeta.reviewed_at || reportMeta.published_at || request.closed_at))} -
-            Generated ${escapeHtml(generatedAt)}
-          </div>
+          <div class="report-certification-copy">${renderFieldRows([
+            { label: 'Approved By', value: reportMeta.admin_name || '-', multiline: false },
+            { label: 'Reviewed', value: formatDateTime(reportMeta.reviewed_at || reportMeta.published_at || request.closed_at), multiline: false, dir: 'ltr' },
+            { label: 'Generated', value: generatedAt, multiline: false, dir: 'ltr' },
+          ])}</div>
           <div class="report-certification-note">This report was issued by Curevie for home healthcare services. Ref: ${escapeHtml(reportNumber)}</div>
         </div>
       </section>
