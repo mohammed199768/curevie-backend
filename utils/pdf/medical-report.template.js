@@ -487,14 +487,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       display: block;
       margin-bottom: 14px;
     }
-    .hero-subtitle {
-      font-size: 7.5pt;
-      font-weight: 700;
-      color: #78b09e;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
     .hero-title {
       font-size: 22pt;
       font-weight: 700;
@@ -929,34 +921,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       overflow-wrap: anywhere;
     }
 
-    .report-certification {
-      margin-top: 28px;
-      padding: 14px 18px;
-      background: #f1f6ee;
-      border-radius: 10px;
-      border: 1px solid #dde6dc;
-    }
-    .report-certification-title {
-      font-size: 7.5pt;
-      color: #8fa8a5;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      margin-bottom: 4px;
-    }
-    .report-certification-copy {
-      color: #4e5c5a;
-    }
-    .report-certification-copy .text-line {
-      font-size: 8.5pt;
-    }
-    .report-certification-note {
-      font-size: 8pt;
-      color: #8fa8a5;
-      margin-top: 4px;
-      overflow-wrap: anywhere;
-    }
-
     .report-footer {
       background: #0d4440;
       padding: 18px 38px;
@@ -1004,8 +968,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       .lab-card,
       .attachment-row,
       .report-footer,
-      .overview-card,
-      .report-certification {
+      .overview-card {
         break-inside: avoid !important;
         page-break-inside: avoid !important;
       }
@@ -1045,8 +1008,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       .overview-card,
       .lab-card,
       .narrative-row,
-      .provider-block-header,
-      .report-certification {
+      .provider-block-header {
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
       }
@@ -1063,7 +1025,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       <div class="hero-inner">
         <div class="hero-left">
           ${logoHtml}
-          <div class="hero-subtitle">Clinical Record</div>
           <div class="hero-title">Comprehensive<br />Medical Report</div>
           <div class="hero-service">${renderTextBlock(serviceName, { multiline: false })}</div>
         </div>
@@ -1119,16 +1080,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       </div>
 
       <section class="report-section">
-        <div class="section-heading">
-          <div class="section-eyebrow">Section</div>
-          <div class="section-title">Comprehensive Report</div>
-          <div class="section-rule">
-            <div class="section-rule-accent"></div>
-            <div class="section-rule-line"></div>
-          </div>
-          <div class="section-subtitle">The clinical content below is drawn from provider submissions. Administrative and billing details are omitted.</div>
-        </div>
-
         <div class="provider-report-list">
           ${
             providerReports.length
@@ -1182,18 +1133,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
           `
           : ''
       }
-
-      <section class="report-section">
-        <div class="report-certification">
-          <div class="report-certification-title">Report Certification</div>
-          <div class="report-certification-copy">${renderFieldRows([
-            { label: 'Approved By', value: reportMeta.admin_name || '-', multiline: false },
-            { label: 'Reviewed', value: formatDateTime(reportMeta.reviewed_at || reportMeta.published_at || request.closed_at), multiline: false, dir: 'ltr' },
-            { label: 'Generated', value: generatedAt, multiline: false, dir: 'ltr' },
-          ])}</div>
-          <div class="report-certification-note">This report was issued by Curevie for home healthcare services. Ref: ${escapeHtml(reportNumber)}</div>
-        </div>
-      </section>
     </div>
 
     <footer class="report-footer">

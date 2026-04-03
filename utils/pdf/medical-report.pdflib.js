@@ -349,13 +349,6 @@ async function generateMedicalReportPdf(reportData) {
   function drawSectionTitle(title, subtitle = null) {
     ensureSpace(subtitle ? 42 : 30);
 
-    page.drawText('SECTION', {
-      x: MARGIN,
-      y: y + 13,
-      size: 7.8,
-      font: fontBold,
-      color: C.brandStone,
-    });
     page.drawText(asDisplay(title), {
       x: MARGIN,
       y,
@@ -856,11 +849,6 @@ async function generateMedicalReportPdf(reportData) {
 
   y -= topCardHeight + 18;
   drawProviderStrip();
-
-  drawSectionTitle(
-    'Comprehensive Report',
-    'The summary below focuses on the clinical content of the request and omits administrative invoice and approval details.'
-  );
 
   if (providerReports.length) {
     providerReports.forEach((report) => {
