@@ -238,6 +238,9 @@ class RequestLifecycleService { // AUDIT-FIX: P3-STEP7C-SRP - request orchestrat
         status: report.status,
         published_at: report.published_at,
         version: report.version,
+        ...(request.status === 'CLOSED' && report.status === 'PUBLISHED'
+          ? { pdf_url: report.pdf_url ?? null }
+          : {}),
       }; // AUDIT-FIX: P3-STEP7C-COMPAT - preserve the existing patient-safe report-status payload.
     }
 
