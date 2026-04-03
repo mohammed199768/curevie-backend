@@ -1423,6 +1423,9 @@ async function sendRequestChatMessage({
   }
 
   const request = await assertChatRoomAccess(requestId, normalizedRoomType, user);
+  if (request.status === 'CLOSED') {
+    throw new AppError('Chat is closed for this request', 403);
+  }
   const room = await ensureAccessibleRequestChatRoom(request, normalizedRoomType);
   await ensureChatParticipant(room.id, user.id, user.role);
 
