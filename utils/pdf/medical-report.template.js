@@ -366,7 +366,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     || null;
 
   const serviceName = request.service_name || humanizeEnum(request.service_type) || 'Care Service';
-  const serviceDescription = request.service_description || request.notes || 'No additional service notes provided.';
   const providerName = primaryReport?.provider_name || request.provider_name || request.lead_provider_name || '-';
   const providerRole = getProviderTypeLabel(primaryReport?.provider_type || request.provider_type || request.lead_provider_type);
   const issuedAt = reportMeta.reviewed_at || reportMeta.published_at || request.closed_at || request.completed_at || new Date();
@@ -375,7 +374,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
   const generatedAt = new Date().toLocaleString('en-GB');
 
   const logoHtml = assets.logoDataUri
-    ? `<img class="hero-logo" src="${assets.logoDataUri}" alt="Curevie" />`
+    ? `<img class="hero-logo" src="${assets.logoDataUri}" alt="Curevie" style="height:60px;max-width:220px;object-fit:contain;display:block;margin-bottom:8px;" />`
     : `<span class="hero-wordmark">CUREVIE</span>`;
 
   return `<!doctype html>
@@ -1025,7 +1024,6 @@ function renderMedicalReportHtml(reportData, assets = {}) {
       <div class="hero-inner">
         <div class="hero-left">
           ${logoHtml}
-          <div class="hero-title">Comprehensive<br />Medical Report</div>
           <div class="hero-service">${renderTextBlock(serviceName, { multiline: false })}</div>
         </div>
         <div class="hero-meta-box">
@@ -1038,22 +1036,7 @@ function renderMedicalReportHtml(reportData, assets = {}) {
     </header>
 
     <div class="report-body">
-      <div class="overview-row">
-        <div class="overview-card">
-          <div class="overview-card-accent"></div>
-          <div class="overview-card-inner">
-            <span class="overview-card-tag">${request.request_type === 'PACKAGE' ? 'Package Overview' : 'Service Overview'}</span>
-            <div class="overview-card-headline">${renderTextBlock(serviceName, { multiline: true })}</div>
-            ${renderFieldRows([
-              { label: 'Request Type', value: humanizeEnum(request.request_type), multiline: false, dir: 'ltr' },
-              { label: 'Service Type', value: humanizeEnum(request.service_type), multiline: false, dir: 'ltr' },
-              { label: 'Category', value: request.service_category_name || '-', multiline: true },
-              { label: 'Scheduled', value: formatDateTime(request.scheduled_at || request.requested_at), multiline: false, dir: 'ltr' },
-            ])}
-            <div class="overview-note">${renderTextBlock(serviceDescription, { multiline: true })}</div>
-          </div>
-        </div>
-
+      <div class="overview-row" style="grid-template-columns: 1fr;">
         <div class="overview-card">
           <div class="overview-card-accent gold"></div>
           <div class="overview-card-inner">

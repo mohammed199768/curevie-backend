@@ -49,7 +49,7 @@ const PDF_FONT_BOLD_CANDIDATES = [
   FONT_BOLD,
   FONT_ARABIC_BOLD,
 ].filter(Boolean);
-const LOGO_PATH = path.join(BACKEND_ROOT, 'assets', 'logo.webp');
+const LOGO_PATH = path.join(BACKEND_ROOT, 'assets', '3.png');
 
 [TEMP_DIR, OUTPUT_DIR, path.join(BACKEND_ROOT, 'assets')].forEach((dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
