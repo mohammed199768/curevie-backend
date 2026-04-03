@@ -32,6 +32,13 @@ async function renderPdfFromHtml(html, options = {}) {
   const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({
     headless: 'new',
+    executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
   });
 
   try {
