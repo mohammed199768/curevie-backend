@@ -4,7 +4,6 @@ node_modules/
 !.env.example
 logs/
 uploads/
-assets/
 npm-debug.log*
 *.log
 qa_artifacts/*.pdf
