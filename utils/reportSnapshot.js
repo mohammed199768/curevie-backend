@@ -14,6 +14,36 @@ function resolvePatientAge(row) {
   return normalizeOptionalAge(row?.patient_age_snapshot ?? row?.guest_age);
 }
 
+function deduplicateProviderReports(reports, serviceType) {
+  if (!['MEDICAL', 'PACKAGE'].includes(serviceType)) {
+    return reports;
+  }
+
+  const byProvider = new Map();
+
+  for (const report of reports) {
+    const key = report.provider_id;
+    if (!byProvider.has(key)) {
+      byProvider.set(key, []);
+    }
+    byProvider.get(key).push(report);
+  }
+
+  const result = [];
+
+  for (const [, providerReports] of byProvider) {
+    const hasFinal = providerReports.some((report) => report.report_type === 'FINAL_REPORT');
+
+    if (hasFinal) {
+      result.push(...providerReports.filter((report) => report.report_type !== 'SUB_REPORT'));
+    } else {
+      result.push(...providerReports);
+    }
+  }
+
+  return result;
+}
+
 /**
  * Build a complete report snapshot for a request.
  * Reads all data from DB and returns a frozen payload.
@@ -184,6 +214,10 @@ async function buildReportSnapshot(requestId, client) {
   ]);
 
   const meta = metaResult.rows[0] || {};
+  const deduplicatedReports = deduplicateProviderReports(
+    providerReportsResult.rows,
+    req.service_type
+  );
 
   return {
     version: 1,
@@ -231,7 +265,7 @@ async function buildReportSnapshot(requestId, client) {
         created_at: req.invoice_created_at,
       }
       : null,
-    provider_reports: providerReportsResult.rows,
+    provider_reports: deduplicatedReports,
     lab_results: labResultsResult.rows,
     report_meta: {
       reviewed_at: meta.reviewed_at || null,
