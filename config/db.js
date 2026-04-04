@@ -24,4 +24,17 @@ pool.on('error', (err) => {
   logger.error('Unexpected PostgreSQL pool error', { message: err.message, stack: err.stack });
 });
 
+const { alertSlowQuery } = require('../utils/telegram');
+const SLOW_MS = parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || '2000', 10);
+const _origQuery = pool.query.bind(pool);
+pool.query = function(...args) {
+  const start = Date.now();
+  const sql = typeof args[0] === 'string' ? args[0] : (args[0]?.text || '');
+  const result = _origQuery(...args);
+  if (result && typeof result.then === 'function') {
+    result.then(() => { const d = Date.now() - start; if (d >= SLOW_MS) alertSlowQuery(sql, d); }).catch(() => {});
+  }
+  return result;
+};
+
 module.exports = pool;

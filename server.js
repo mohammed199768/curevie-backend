@@ -1,6 +1,6 @@
+const { alertStartup, alertShutdown } = require('./utils/telegram');
 require('dotenv').config();
 
-// AUDIT-FIX: PATH — startup guard ensures critical directories exist inside backend/
 const path = require('path');
 const fs = require('fs');
 const BACKEND_ROOT = path.resolve(__dirname);
@@ -47,6 +47,7 @@ const server = app.listen(PORT, async () => {
   try {
     await pool.query('SELECT 1');
     logger.info(`Server running on port ${PORT}`);
+    alertStartup(PORT);
   } catch (err) {
     logger.error('PostgreSQL connection test failed on startup', { message: err.message });
     process.exit(1);
@@ -55,6 +56,7 @@ const server = app.listen(PORT, async () => {
 
 const shutdown = async (signal) => {
   logger.info(`Received ${signal}, shutting down gracefully`);
+  alertShutdown(signal);
   server.close(async () => {
     await pool.end();
     logger.info('HTTP server and DB pool closed');
