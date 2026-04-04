@@ -433,9 +433,9 @@ class LabTestRepository extends BaseRepository {
     await executor.query('DELETE FROM lab_panel_tests WHERE panel_id = $1', [panelId]);
     if (!ids.length) return;
 
-    const values = ids.map((_, index) => `($1, $${index + 2}, ${index})`).join(', ');
+    const values = ids.map((_, index) => `($1, $${index + 2}, $${index + 2}, ${index})`).join(', ');
     await executor.query(
-      `INSERT INTO lab_panel_tests (panel_id, lab_test_id, display_order) VALUES ${values}`,
+      `INSERT INTO lab_panel_tests (panel_id, test_id, lab_test_id, display_order) VALUES ${values}`,
       [panelId, ...ids]
     );
   }
