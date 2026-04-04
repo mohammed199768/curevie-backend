@@ -534,8 +534,8 @@ const requestProviderReportSchema = Joi.object({
   treatment_plan: Joi.string().max(5000).trim().allow('', null),
   lab_notes: Joi.string().max(5000).trim().allow('', null),
   imaging_notes: Joi.string().max(5000).trim().allow('', null),
-  image_url: Joi.string().uri().allow('', null),
-  pdf_report_url: Joi.string().uri().allow('', null),
+  image_url: Joi.string().trim().allow('', null),
+  pdf_report_url: Joi.string().trim().allow('', null),
   nurse_notes: Joi.string().max(5000).trim().allow('', null),
   notes: Joi.string().max(5000).trim().allow('', null),
 });

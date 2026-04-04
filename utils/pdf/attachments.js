@@ -4,6 +4,7 @@ const path = require('path');
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const { logger } = require('../logger');
+const { generateSignedUrl, isBunnyConfigured } = require('../bunny');
 
 function isImagingProviderReport(report = {}) {
   const providerType = String(report.provider_type || '').trim().toUpperCase();
@@ -99,11 +100,28 @@ async function fetchPdfBufferFromUrl(fileUrl) {
     return fsPromises.readFile(localPdfPath);
   }
 
-  if (!isAllowedRemotePdfUrl(fileUrl)) {
+  const rawValue = String(fileUrl || '').trim();
+  if (!rawValue) {
+    throw new Error('PDF_URL_REQUIRED');
+  }
+
+  let remoteUrl = rawValue;
+  if (!/^https?:\/\//i.test(rawValue)) {
+    const normalizedPath = rawValue.replace(/\\/g, '/');
+    if (normalizedPath.startsWith('/uploads/') || normalizedPath.startsWith('uploads/')) {
+      throw new Error('LOCAL_PDF_NOT_FOUND');
+    }
+    if (!isBunnyConfigured()) {
+      throw new Error('REMOTE_PDF_URL_NOT_ALLOWED');
+    }
+    remoteUrl = generateSignedUrl(rawValue);
+  }
+
+  if (!isAllowedRemotePdfUrl(remoteUrl)) {
     throw new Error('REMOTE_PDF_URL_NOT_ALLOWED');
   }
 
-  const response = await axios.get(fileUrl, {
+  const response = await axios.get(remoteUrl, {
     responseType: 'arraybuffer',
     timeout: 20000,
     validateStatus: () => true,
