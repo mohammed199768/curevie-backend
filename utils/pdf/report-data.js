@@ -218,9 +218,9 @@ async function loadMedicalReportPdfData(input) {
       `
       SELECT
         ltr.*,
-        lt.name AS test_name,
-        lt.unit,
-        lt.reference_range
+        COALESCE(ltr.test_name_snapshot, lt.name) AS test_name,
+        COALESCE(ltr.unit_snapshot, lt.unit) AS unit,
+        COALESCE(ltr.reference_range_snapshot, lt.reference_range) AS reference_range
       FROM lab_test_results ltr
       LEFT JOIN lab_tests lt ON lt.id = ltr.lab_test_id
       WHERE ltr.request_id = $1

@@ -665,9 +665,24 @@ class RequestRepository extends BaseRepository {
         `
         INSERT INTO lab_test_results (
           request_id, lab_test_id, result, is_normal, notes, entered_by,
-          flag, matched_range_id, condition
+          flag, matched_range_id, condition,
+          test_name_snapshot, unit_snapshot, reference_range_snapshot
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        SELECT
+          $1,
+          lt.id,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          lt.name,
+          lt.unit,
+          lt.reference_range
+        FROM lab_tests lt
+        WHERE lt.id = $2
         ON CONFLICT (request_id, lab_test_id)
         DO UPDATE SET
           result = EXCLUDED.result,
@@ -676,7 +691,10 @@ class RequestRepository extends BaseRepository {
           entered_by = EXCLUDED.entered_by,
           flag = EXCLUDED.flag,
           matched_range_id = EXCLUDED.matched_range_id,
-          condition = EXCLUDED.condition
+          condition = EXCLUDED.condition,
+          test_name_snapshot = COALESCE(lab_test_results.test_name_snapshot, EXCLUDED.test_name_snapshot),
+          unit_snapshot = COALESCE(lab_test_results.unit_snapshot, EXCLUDED.unit_snapshot),
+          reference_range_snapshot = COALESCE(lab_test_results.reference_range_snapshot, EXCLUDED.reference_range_snapshot)
         RETURNING *
         `,
         [
@@ -697,14 +715,31 @@ class RequestRepository extends BaseRepository {
     // AUDIT-FIX: P3-COMPAT — fall back to the legacy column set when needed.
     return this._execOne(
       `
-      INSERT INTO lab_test_results (request_id, lab_test_id, result, is_normal, notes, entered_by)
-      VALUES ($1,$2,$3,$4,$5,$6)
+      INSERT INTO lab_test_results (
+        request_id, lab_test_id, result, is_normal, notes, entered_by,
+        test_name_snapshot, unit_snapshot, reference_range_snapshot
+      )
+      SELECT
+        $1,
+        lt.id,
+        $3,
+        $4,
+        $5,
+        $6,
+        lt.name,
+        lt.unit,
+        lt.reference_range
+      FROM lab_tests lt
+      WHERE lt.id = $2
       ON CONFLICT (request_id, lab_test_id)
       DO UPDATE SET
         result = EXCLUDED.result,
         is_normal = EXCLUDED.is_normal,
         notes = EXCLUDED.notes,
-        entered_by = EXCLUDED.entered_by
+        entered_by = EXCLUDED.entered_by,
+        test_name_snapshot = COALESCE(lab_test_results.test_name_snapshot, EXCLUDED.test_name_snapshot),
+        unit_snapshot = COALESCE(lab_test_results.unit_snapshot, EXCLUDED.unit_snapshot),
+        reference_range_snapshot = COALESCE(lab_test_results.reference_range_snapshot, EXCLUDED.reference_range_snapshot)
       RETURNING *
       `,
       [
