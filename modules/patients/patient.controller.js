@@ -29,7 +29,7 @@ async function listCombinedPatients(req, res) {
   const query = `
     WITH combined AS (
       SELECT
-        p.id         AS id,
+        p.id::text   AS id,
         p.full_name  AS name,
         p.phone      AS phone,
         'PATIENT'    AS record_type,
@@ -40,11 +40,11 @@ async function listCombinedPatients(req, res) {
       UNION ALL
 
       SELECT
-        MIN(sr.id)         AS id,
-        sr.guest_name      AS name,
-        sr.guest_phone     AS phone,
-        'GUEST'            AS record_type,
-        MIN(sr.created_at) AS created_at
+        (MIN(sr.created_at))::text AS id,
+        sr.guest_name              AS name,
+        sr.guest_phone             AS phone,
+        'GUEST'                    AS record_type,
+        MIN(sr.created_at)         AS created_at
       FROM service_requests sr
       WHERE sr.request_type = 'GUEST'
         AND sr.guest_name IS NOT NULL
@@ -58,13 +58,13 @@ async function listCombinedPatients(req, res) {
 
   const countQuery = `
     WITH combined AS (
-      SELECT p.id
+      SELECT 1
       FROM patients p
       ${countPatientSearchSql}
 
       UNION ALL
 
-      SELECT MIN(sr.id)
+      SELECT 1
       FROM service_requests sr
       WHERE sr.request_type = 'GUEST'
         AND sr.guest_name IS NOT NULL
