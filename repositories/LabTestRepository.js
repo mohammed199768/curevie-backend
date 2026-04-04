@@ -376,13 +376,14 @@ class LabTestRepository extends BaseRepository {
     return this._queryOne(
       `
       INSERT INTO lab_panels (
-        name_en, name_ar, description_en, description_ar, price,
+        name, name_en, name_ar, description_en, description_ar, price,
         sample_types, turnaround_hours, is_active, is_vip_exclusive
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       RETURNING *
       `,
       [
+        name_en,
         name_en,
         name_ar,
         description_en || null,
