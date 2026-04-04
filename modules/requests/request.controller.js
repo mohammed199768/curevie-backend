@@ -1,6 +1,7 @@
 const fsPromises = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const pool = require('../../config/db');
 const requestService = require('./request.service');
 const workflowService = require('./request.workflow.service');
 const {
@@ -14,11 +15,15 @@ const paymentService = require('../payments/payment.service');
 const notifService = require('../notifications/notification.service');
 const { logger, audit } = require('../../utils/logger');
 const { isBunnyConfigured, uploadToBunny } = require('../../utils/bunny');
-const { generateMedicalReportPdf } = require('../../utils/pdfEngine');
+const {
+  generateMedicalReportPdf,
+  generateMedicalReportPdfFromSnapshot,
+} = require('../../utils/pdfEngine');
 const {
   getProviderSnapshotById,
   syncInvoiceSnapshots,
 } = require('../../utils/requestSnapshots');
+const { buildReportSnapshot } = require('../../utils/reportSnapshot');
 const {
   storeGeneratedPdf,
   deleteStoredPdf,
@@ -515,7 +520,48 @@ async function publishReport(req, res) {
 
 async function getReportStatus(req, res) {
   const report = await lifecycleService.getReportStatus(req.params.id, req.user); // AUDIT-FIX: P3-STEP7C-SRP - report-status orchestration is delegated to the lifecycle service.
-  return res.json(report); // AUDIT-FIX: P3-STEP7C-COMPAT - controller remains a thin HTTP adapter with the same response shape.
+  if (!report || req.user.role === 'PATIENT') {
+    return res.json(report); // AUDIT-FIX: P3-STEP7C-COMPAT - patient callers keep the existing metadata-only response shape.
+  }
+
+  return res.json({
+    ...report,
+    report_snapshot: report.report_snapshot || null,
+  }); // AUDIT-FIX: P3-STEP7C-COMPAT - staff/admin callers now receive the stored snapshot alongside report metadata.
+}
+
+async function updateReportSnapshot(req, res) {
+  const { id } = req.params;
+  const adminId = req.user.id;
+  const { snapshot } = req.body || {};
+
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return res.status(400).json({ error: 'snapshot is required and must be an object' });
+  }
+
+  const requestRow = await requestRepo.findById(id, { includeBilling: false });
+  if (!requestRow) {
+    return res.status(404).json({ error: 'Request not found' });
+  }
+
+  if (!['COMPLETED', 'CLOSED'].includes(requestRow.status)) {
+    return res.status(400).json({ error: 'Snapshot can only be updated for COMPLETED or CLOSED requests' });
+  }
+
+  await requestService.ensureMedicalReportRecord(id);
+  await pool.query(
+    `
+    UPDATE medical_reports
+    SET report_snapshot = $1,
+        snapshot_updated_by = $2,
+        snapshot_updated_at = NOW(),
+        updated_at = NOW()
+    WHERE request_id = $3
+    `,
+    [JSON.stringify(snapshot), adminId, id]
+  );
+
+  return res.json({ success: true });
 }
 
 async function uploadRequestFiles(req, res) {
@@ -790,6 +836,26 @@ async function completeRequest(req, res) {
 
   if (transactionResult.errorStatus) {
     return res.status(transactionResult.errorStatus).json(transactionResult.errorBody);
+  }
+
+  try {
+    const snapshot = await buildReportSnapshot(id);
+    await pool.query(
+      `
+      INSERT INTO medical_reports (request_id, status, report_snapshot)
+      VALUES ($1, 'DRAFT', $2)
+      ON CONFLICT (request_id) DO UPDATE
+      SET report_snapshot = EXCLUDED.report_snapshot,
+          updated_at = NOW()
+      WHERE medical_reports.report_snapshot IS NULL
+      `,
+      [id, JSON.stringify(snapshot)]
+    );
+  } catch (snapshotErr) {
+    logger.error('Failed to build report snapshot on completion', {
+      requestId: id,
+      error: snapshotErr.message,
+    });
   }
 
   await notifService.notifyRequestStatusChanged({
@@ -1108,7 +1174,19 @@ async function closeRequest(req, res) {
 
   try {
     pdfUrl = await withTimeout(async () => {
-      const pdfBuffer = await generateMedicalReportPdf(id);
+      const snapshotRow = await pool.query(
+        'SELECT report_snapshot FROM medical_reports WHERE request_id = $1',
+        [id]
+      );
+      const snapshot = snapshotRow.rows[0]?.report_snapshot;
+
+      let pdfBuffer;
+      if (snapshot && snapshot.request) {
+        pdfBuffer = await generateMedicalReportPdfFromSnapshot(snapshot);
+      } else {
+        pdfBuffer = await generateMedicalReportPdf(id);
+      }
+
       const persistedPdfUrl = await storeGeneratedPdf(pdfBuffer, `medical-report-${id}.pdf`, 'medical-reports');
       if (persistedPdfUrl) {
         await requestRepo.updateMedicalReportPdfUrl(id, persistedPdfUrl);
@@ -1206,6 +1284,7 @@ module.exports = {
   sendRequestChatMessageByRoomId,
   publishReport,
   getReportStatus,
+  updateReportSnapshot,
   uploadRequestFiles,
   rateRequest,
   getProviderRatings,

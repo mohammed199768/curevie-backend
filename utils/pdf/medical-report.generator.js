@@ -45,9 +45,7 @@ async function buildTemplateAssets() {
   };
 }
 
-async function generateMedicalReportPdf(reportData) {
-  const resolvedReportData = await loadMedicalReportPdfData(reportData);
-
+async function renderMedicalReportPdf(resolvedReportData) {
   try {
     const assets = await buildTemplateAssets();
     const html = renderMedicalReportHtml(resolvedReportData, assets);
@@ -77,6 +75,26 @@ async function generateMedicalReportPdf(reportData) {
   }
 }
 
+async function generateMedicalReportPdf(reportData) {
+  const resolvedReportData = await loadMedicalReportPdfData(reportData);
+  return renderMedicalReportPdf(resolvedReportData);
+}
+
+/**
+ * Generate a medical report PDF directly from a pre-built snapshot.
+ * Does NOT read from DB. Uses the snapshot as the only data source.
+ * @param {object} snapshot
+ * @returns {Promise<Buffer>}
+ */
+async function generateMedicalReportPdfFromSnapshot(snapshot) {
+  if (!snapshot || !snapshot.request) {
+    throw new Error('Invalid snapshot: missing request field');
+  }
+
+  return renderMedicalReportPdf(snapshot);
+}
+
 module.exports = {
   generateMedicalReportPdf,
+  generateMedicalReportPdfFromSnapshot,
 };

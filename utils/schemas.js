@@ -548,6 +548,10 @@ const closeRequestSchema = Joi.object({
   admin_close_notes: Joi.string().max(1000).trim().allow('', null),
 });
 
+const updateReportSnapshotSchema = Joi.object({
+  snapshot: Joi.object().required(),
+});
+
 const recordPaymentSchema = Joi.object({
   amount: Joi.number().positive().precision(3).required(),
   method: Joi.string().valid('CASH', 'CARD', 'TRANSFER', 'OTHER').required(),
@@ -719,6 +723,7 @@ module.exports = {
   requestProviderReportSchema,
   requestFinalReportConfirmSchema,
   closeRequestSchema,
+  updateReportSnapshotSchema,
   recordPaymentSchema,
   requestIdParamSchema,
   requestTaskParamsSchema,

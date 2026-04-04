@@ -35,6 +35,7 @@ const {
   requestProviderReportSchema,
   requestFinalReportConfirmSchema,
   closeRequestSchema,
+  updateReportSnapshotSchema,
   recordPaymentSchema,
   requestIdParamSchema,
   requestTaskParamsSchema,
@@ -489,6 +490,15 @@ router.get(
   readLimiter,
   validate(requestIdParamSchema, 'params'),
   asyncHandler(requestController.getReportStatus)
+);
+router.put(
+  '/:id/report/snapshot',
+  authenticate,
+  adminOnly,
+  apiLimiter,
+  validate(requestIdParamSchema, 'params'),
+  validate(updateReportSnapshotSchema),
+  asyncHandler(requestController.updateReportSnapshot)
 );
 router.delete(
   '/:id',

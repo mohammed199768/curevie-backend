@@ -1,5 +1,8 @@
 const { generateInvoicePdf } = require('./invoice.generator');
-const { generateMedicalReportPdf } = require('./medical-report.generator');
+const {
+  generateMedicalReportPdf,
+  generateMedicalReportPdfFromSnapshot,
+} = require('./medical-report.generator');
 const {
   SUPPORTED_FORMATS,
   convertToPdf,
@@ -15,6 +18,7 @@ module.exports = {
   addWatermark,
   generateInvoicePdf,
   generateMedicalReportPdf,
+  generateMedicalReportPdfFromSnapshot,
   processUploadedFile,
   cleanupOldFiles,
   SUPPORTED_FORMATS,
