@@ -17,9 +17,10 @@ const {
 } = require('./invoice.pdflib');
 
 async function loadInvoicePdfData(invoiceId) {
-  const result = await pool.query(`
+  const invoiceResult = await pool.query(`
     SELECT
       i.*,
+      i.payments_snapshot,
       sr.id AS request_id,
       sr.request_type,
       sr.service_type,
@@ -40,9 +41,9 @@ async function loadInvoicePdfData(invoiceId) {
       lt.cost AS lab_test_cost,
       COALESCE(i.service_name_snapshot, sr.service_name_snapshot, pk.name) AS package_name,
       pk.total_cost AS package_cost,
-      c.code AS coupon_code,
-      c.discount_type,
-      c.discount_value,
+      COALESCE(i.coupon_code_snapshot, c.code) AS coupon_code,
+      COALESCE(i.coupon_discount_type_snapshot, c.discount_type::text) AS discount_type,
+      COALESCE(i.coupon_discount_value_snapshot, c.discount_value) AS discount_value,
       COALESCE(i.provider_name_snapshot, sr.assigned_provider_name_snapshot, sr.lead_provider_name_snapshot, sp.full_name) AS provider_name,
       COALESCE(i.provider_type_snapshot, sr.assigned_provider_type_snapshot, sr.lead_provider_type_snapshot, sp.type::text) AS provider_type
     FROM invoices i
@@ -57,19 +58,30 @@ async function loadInvoicePdfData(invoiceId) {
     LIMIT 1
   `, [invoiceId]);
 
-  const invoice = result.rows[0];
-  if (!invoice) {
+  const invoiceRow = invoiceResult.rows[0];
+  if (!invoiceRow) {
     throw new Error('Invoice not found');
   }
 
-  const paymentsResult = await pool.query(
-    'SELECT * FROM payments WHERE invoice_id = $1 ORDER BY created_at ASC',
-    [invoiceId]
-  );
+  let paymentsData;
+  if (Array.isArray(invoiceRow.payments_snapshot)) {
+    paymentsData = invoiceRow.payments_snapshot;
+  } else {
+    const paymentsResult = await pool.query(
+      `
+      SELECT id, amount, payment_method, payer_name, notes, created_at
+      FROM payments
+      WHERE invoice_id = $1
+      ORDER BY created_at ASC
+      `,
+      [invoiceId]
+    );
+    paymentsData = paymentsResult.rows;
+  }
 
   return {
-    invoice,
-    payments: paymentsResult.rows,
+    invoice: invoiceRow,
+    payments: paymentsData,
   };
 }
 

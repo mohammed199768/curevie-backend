@@ -379,6 +379,8 @@ function buildInvoiceSnapshotPayloadFromRow(invoiceRow = {}) {
       guest_name: invoiceRow.guest_name || null,
       coupon_id: invoiceRow.coupon_id || null,
       coupon_code_snapshot: invoiceRow.coupon_code_snapshot || null,
+      coupon_discount_type_snapshot: invoiceRow.coupon_discount_type_snapshot || null,
+      coupon_discount_value_snapshot: normalizeNullableNumber(invoiceRow.coupon_discount_value_snapshot),
       original_amount: normalizeNullableNumber(invoiceRow.original_amount),
       vip_discount_amount: normalizeNullableNumber(invoiceRow.vip_discount_amount),
       coupon_discount_amount: normalizeNullableNumber(invoiceRow.coupon_discount_amount),
@@ -566,10 +568,71 @@ async function syncInvoiceSnapshots(db, invoiceId, requestId) {
     [invoiceId, requestId]
   );
 
-  const row = result.rows[0] || null;
-  if (!row) return null;
+  let invoiceRow = result.rows[0] || null;
+  if (!invoiceRow) return null;
 
-  const payload = buildInvoiceSnapshotPayloadFromRow(row);
+  if (invoiceRow.coupon_id) {
+    await db.query(
+      `
+      UPDATE invoices
+      SET
+        coupon_discount_type_snapshot = COALESCE(
+          coupon_discount_type_snapshot,
+          (SELECT discount_type::text FROM coupons WHERE id = $2)
+        ),
+        coupon_discount_value_snapshot = COALESCE(
+          coupon_discount_value_snapshot,
+          (SELECT discount_value FROM coupons WHERE id = $2)
+        )
+      WHERE id = $1
+        AND (
+          coupon_discount_type_snapshot IS NULL
+          OR coupon_discount_value_snapshot IS NULL
+        )
+      `,
+      [invoiceRow.id, invoiceRow.coupon_id]
+    );
+  }
+
+  await db.query(
+    `
+    UPDATE invoices
+    SET payments_snapshot = COALESCE(
+      payments_snapshot,
+      (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'id', p.id,
+            'amount', p.amount,
+            'payment_method', p.payment_method,
+            'payer_name', p.payer_name,
+            'notes', p.notes,
+            'created_at', p.created_at
+          )
+          ORDER BY p.created_at ASC
+        )
+        FROM payments p
+        WHERE p.invoice_id = $1
+      )
+    )
+    WHERE id = $1
+      AND payments_snapshot IS NULL
+    `,
+    [invoiceRow.id]
+  );
+
+  const refreshedResult = await db.query(
+    `
+    SELECT *
+    FROM invoices
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [invoiceRow.id]
+  );
+  invoiceRow = refreshedResult.rows[0] || invoiceRow;
+
+  const payload = buildInvoiceSnapshotPayloadFromRow(invoiceRow);
   const payloadResult = await db.query(
     `
     UPDATE invoices
@@ -580,7 +643,7 @@ async function syncInvoiceSnapshots(db, invoiceId, requestId) {
     [invoiceId, JSON.stringify(payload)]
   );
 
-  return payloadResult.rows[0] || row;
+  return payloadResult.rows[0] || invoiceRow;
 }
 
 module.exports = {

@@ -17,6 +17,7 @@ async function generateInvoicePdf(invoiceId) {
   const result = await pool.query(`
     SELECT
       i.*,
+      i.payments_snapshot,
       sr.id AS request_id,
       sr.request_type,
       sr.service_type,
@@ -26,22 +27,22 @@ async function generateInvoicePdf(invoiceId) {
       sr.guest_address,
       sr.notes AS request_notes,
       sr.completed_at,
-      p.full_name AS patient_name,
-      p.phone AS patient_phone,
-      p.address AS patient_address,
+      COALESCE(i.patient_name_snapshot, sr.patient_full_name_snapshot, p.full_name, sr.guest_name, i.guest_name) AS patient_name,
+      COALESCE(i.patient_phone_snapshot, sr.patient_phone_snapshot, p.phone, sr.guest_phone) AS patient_phone,
+      COALESCE(i.patient_address_snapshot, sr.patient_address_snapshot, p.address, sr.guest_address) AS patient_address,
       p.is_vip,
       p.vip_discount,
-      s.name AS service_name,
+      COALESCE(i.service_name_snapshot, sr.service_name_snapshot, s.name, lt.name, pk.name) AS service_name,
       s.price AS service_price,
-      lt.name AS lab_test_name,
+      COALESCE(i.service_name_snapshot, sr.service_name_snapshot, lt.name) AS lab_test_name,
       lt.cost AS lab_test_cost,
-      pk.name AS package_name,
+      COALESCE(i.service_name_snapshot, sr.service_name_snapshot, pk.name) AS package_name,
       pk.total_cost AS package_cost,
-      c.code AS coupon_code,
-      c.discount_type,
-      c.discount_value,
-      sp.full_name AS provider_name,
-      sp.type AS provider_type
+      COALESCE(i.coupon_code_snapshot, c.code) AS coupon_code,
+      COALESCE(i.coupon_discount_type_snapshot, c.discount_type::text) AS discount_type,
+      COALESCE(i.coupon_discount_value_snapshot, c.discount_value) AS discount_value,
+      COALESCE(i.provider_name_snapshot, sr.assigned_provider_name_snapshot, sr.lead_provider_name_snapshot, sp.full_name) AS provider_name,
+      COALESCE(i.provider_type_snapshot, sr.assigned_provider_type_snapshot, sr.lead_provider_type_snapshot, sp.type::text) AS provider_type
     FROM invoices i
     LEFT JOIN service_requests sr ON sr.id = i.request_id
     LEFT JOIN patients p ON p.id = i.patient_id
@@ -56,10 +57,21 @@ async function generateInvoicePdf(invoiceId) {
   if (!result.rows[0]) throw new Error('الفاتورة غير موجودة');
   const inv = result.rows[0];
 
-  const payments = await pool.query(
-    'SELECT * FROM payments WHERE invoice_id = $1 ORDER BY created_at ASC',
-    [invoiceId]
-  );
+  let paymentsData;
+  if (Array.isArray(inv.payments_snapshot)) {
+    paymentsData = inv.payments_snapshot;
+  } else {
+    const paymentsResult = await pool.query(
+      `
+      SELECT id, amount, payment_method, payer_name, notes, created_at
+      FROM payments
+      WHERE invoice_id = $1
+      ORDER BY created_at ASC
+      `,
+      [invoiceId]
+    );
+    paymentsData = paymentsResult.rows;
+  }
 
   const pdfDoc = await PDFDocument.create();
   const { font, fontBold, allowUnicode } = await embedPdfFonts(pdfDoc);
@@ -439,7 +451,7 @@ async function generateInvoicePdf(invoiceId) {
   });
   y -= 58;
 
-  if (payments.rows.length > 0) {
+  if (paymentsData.length > 0) {
     page.drawText('Payment History', {
       x: MARGIN,
       y,
@@ -487,7 +499,7 @@ async function generateInvoicePdf(invoiceId) {
     y -= 28;
 
     let totalPaid = 0;
-    payments.rows.forEach((pay, index) => {
+    paymentsData.forEach((pay, index) => {
       const rowBg = index % 2 === 0 ? C.white : C.surface;
       page.drawRectangle({
         x: MARGIN,
