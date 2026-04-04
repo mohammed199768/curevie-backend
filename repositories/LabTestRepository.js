@@ -602,12 +602,13 @@ class LabTestRepository extends BaseRepository {
     return this._queryOne(
       `
       INSERT INTO lab_packages (
-        name_en, name_ar, description_en, description_ar, price, is_active, is_vip_exclusive, workflow_items
+        name, name_en, name_ar, description_en, description_ar, price, is_active, is_vip_exclusive, workflow_items
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
       RETURNING *
       `,
       [
+        name_en,
         name_en,
         name_ar,
         description_en || null,
