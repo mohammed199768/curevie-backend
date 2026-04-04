@@ -154,7 +154,6 @@ async function buildReportSnapshot(requestId, client) {
         ltr.flag,
         ltr.condition,
         ltr.created_at,
-        ltr.updated_at,
         COALESCE(ltr.test_name_snapshot, lt.name) AS test_name,
         COALESCE(ltr.unit_snapshot, lt.unit) AS unit,
         COALESCE(ltr.reference_range_snapshot, lt.reference_range) AS reference_range
