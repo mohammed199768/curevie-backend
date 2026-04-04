@@ -23,7 +23,7 @@ const asyncHandler = require('../../utils/asyncHandler');
 const pool = require('../../config/db');
 const PatientRepository = require('../../repositories/PatientRepository');
 const { createPatientService } = require('./patient.service');
-const { createPatientController } = require('./patient.controller');
+const { createPatientController, listCombinedPatients } = require('./patient.controller');
 const notifService = require('../notifications/notification.service');
 
 const patientRepo = new PatientRepository(pool);
@@ -34,6 +34,15 @@ const patientController = createPatientController(patientService, notifService);
 const router = express.Router();
 const historyQuerySchema = paginationSchema.fork(['limit'], (schema) => schema.default(20));
 const pointsLogQuerySchema = paginationSchema.fork(['limit'], (schema) => schema.default(20));
+
+router.get(
+  '/combined',
+  authenticate,
+  adminOnly,
+  readLimiter,
+  validate(paginationSchema, 'query'),
+  asyncHandler(listCombinedPatients)
+);
 
 router.get(
   '/',

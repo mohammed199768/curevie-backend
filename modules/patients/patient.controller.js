@@ -2,6 +2,97 @@ const { logger, audit } = require('../../utils/logger');
 const { isBunnyConfigured, uploadToBunny, deleteFromBunny } = require('../../utils/bunny');
 const { paginate, paginationMeta } = require('../../utils/pagination'); // AUDIT-FIX: DRY — shared pagination helpers replace manual patient list metadata
 
+async function listCombinedPatients(req, res) {
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const offset = (page - 1) * limit;
+  const trimmedSearch = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  const search = trimmedSearch ? `%${trimmedSearch}%` : null;
+
+  const pool = require('../../config/db');
+
+  const dataPatientSearchSql = search
+    ? 'WHERE (p.full_name ILIKE $3 OR p.phone ILIKE $3)'
+    : '';
+  const dataGuestSearchSql = search
+    ? 'AND (sr.guest_name ILIKE $3 OR sr.guest_phone ILIKE $3)'
+    : '';
+  const countPatientSearchSql = search
+    ? 'WHERE (p.full_name ILIKE $1 OR p.phone ILIKE $1)'
+    : '';
+  const countGuestSearchSql = search
+    ? 'AND (sr.guest_name ILIKE $1 OR sr.guest_phone ILIKE $1)'
+    : '';
+
+  const params = search ? [limit, offset, search] : [limit, offset];
+
+  const query = `
+    WITH combined AS (
+      SELECT
+        p.id         AS id,
+        p.full_name  AS name,
+        p.phone      AS phone,
+        'PATIENT'    AS record_type,
+        p.created_at AS created_at
+      FROM patients p
+      ${dataPatientSearchSql}
+
+      UNION ALL
+
+      SELECT
+        MIN(sr.id)         AS id,
+        sr.guest_name      AS name,
+        sr.guest_phone     AS phone,
+        'GUEST'            AS record_type,
+        MIN(sr.created_at) AS created_at
+      FROM service_requests sr
+      WHERE sr.request_type = 'GUEST'
+        AND sr.guest_name IS NOT NULL
+        ${dataGuestSearchSql}
+      GROUP BY sr.guest_name, sr.guest_phone
+    )
+    SELECT * FROM combined
+    ORDER BY created_at DESC
+    LIMIT $1 OFFSET $2
+  `;
+
+  const countQuery = `
+    WITH combined AS (
+      SELECT p.id
+      FROM patients p
+      ${countPatientSearchSql}
+
+      UNION ALL
+
+      SELECT MIN(sr.id)
+      FROM service_requests sr
+      WHERE sr.request_type = 'GUEST'
+        AND sr.guest_name IS NOT NULL
+        ${countGuestSearchSql}
+      GROUP BY sr.guest_name, sr.guest_phone
+    )
+    SELECT COUNT(*)::int AS total FROM combined
+  `;
+
+  const countParams = search ? [search] : [];
+
+  const [dataResult, countResult] = await Promise.all([
+    pool.query(query, params),
+    pool.query(countQuery, countParams),
+  ]);
+
+  const total = countResult.rows[0]?.total || 0;
+
+  return res.json({
+    data: dataResult.rows,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
+}
 function createPatientController(patientService, notifService) {
   async function listPatients(req, res) {
     const { page, limit, search } = req.query;
@@ -225,4 +316,4 @@ function createPatientController(patientService, notifService) {
   };
 }
 
-module.exports = { createPatientController };
+module.exports = { createPatientController, listCombinedPatients };
