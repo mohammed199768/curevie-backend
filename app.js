@@ -9,6 +9,7 @@ require('dotenv').config();
 
 const { errorHandler, notFoundHandler } = require('./middlewares/errorHandler');
 const cultureRoutes = require('./modules/culture/culture.routes');
+const filesRoutes = require('./modules/files/files.routes');
 const pool = require('./config/db');
 const redisCache = require('./utils/cache');
 
@@ -114,6 +115,7 @@ app.use('/api/v1/requests',      require('./modules/requests/request.routes'));
 app.use('/api/v1/analytics',     require('./modules/analytics/analytics.routes'));
 app.use('/api/v1/invoices',      require('./modules/invoices/invoice.routes'));
 app.use('/api/v1/chat',          require('./modules/chat/chat.routes'));
+app.use('/api/v1/files',         filesRoutes);
 app.use('/api/v1/payments',      require('./modules/payments/payment.routes'));
 app.use('/api/v1/contact',       require('./modules/contact/contact.routes'));
 app.use('/api/v1/notifications', require('./modules/notifications/notification.routes'));

@@ -303,12 +303,15 @@ async function uploadProviderReportPdf(req, res) {
 
   let url = null;
   if (isBunnyConfigured()) {
-    url = await uploadToBunny(req.file.buffer, req.file.originalname, 'provider-reports');
+    const storagePath = await uploadToBunny(req.file.buffer, req.file.originalname, 'provider-reports');
+    if (storagePath) {
+      url = storagePath;
+    }
   }
 
   if (!url) {
     const relativeUrl = await saveProviderReportPdfLocally(req.file, req.params.id);
-    url = `${req.protocol}://${req.get('host')}${relativeUrl}`;
+    url = relativeUrl;
     logger.info('Provider report PDF stored locally because Bunny upload is unavailable', {
       requestId: req.params.id,
       providerId: req.user.id,
@@ -455,12 +458,15 @@ async function sendRequestChatMessage(req, res) {
 
   if (req.file) {
     if (isBunnyConfigured()) {
-      fileUrl = await uploadToBunny(req.file.buffer, req.file.originalname, 'request-chat');
+      const storagePath = await uploadToBunny(req.file.buffer, req.file.originalname, 'request-chat');
+      if (storagePath) {
+        fileUrl = storagePath;
+      }
     }
 
     if (!fileUrl) {
       const relativeUrl = await saveRequestChatMediaLocally(req.file, req.params.id);
-      fileUrl = `${req.protocol}://${req.get('host')}${relativeUrl}`;
+      fileUrl = relativeUrl;
       logger.info('Request chat media stored locally because Bunny upload is unavailable', {
         requestId: req.params.id,
         userId: req.user.id,

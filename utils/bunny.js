@@ -1,4 +1,5 @@
 const { randomUUID } = require('crypto');
+const crypto = require('crypto');
 const axios = require('axios');
 const { logger } = require('./logger');
 
@@ -9,6 +10,7 @@ function getBunnyConfig() {
     storageZone: String(process.env.BUNNY_STORAGE_ZONE || '').trim(),
     apiKey: String(process.env.BUNNY_API_KEY || '').trim(),
     cdnUrl: String(process.env.BUNNY_CDN_URL || '').trim().replace(/\/+$/, ''),
+    storageHostname: String(process.env.BUNNY_STORAGE_HOSTNAME || '').trim().toLowerCase(),
     region: String(process.env.BUNNY_STORAGE_REGION || '').trim().toLowerCase(),
   };
 
@@ -16,10 +18,32 @@ function getBunnyConfig() {
     config.storageZone
     && config.apiKey
     && config.cdnUrl
-    && config.region
+    && (config.storageHostname || config.region)
   );
 
   return { ...config, configured };
+}
+
+function generateSignedUrl(storagePath, ttl) {
+  const config = getBunnyConfig();
+  const secret = String(process.env.BUNNY_TOKEN_SECRET || '').trim();
+  const cdnUrl = config.cdnUrl;
+  const expirySeconds = ttl || parseInt(process.env.BUNNY_SIGNED_URL_TTL || '300', 10);
+  const expires = Math.floor(Date.now() / 1000) + expirySeconds;
+
+  const cleanPath = String(storagePath || '').replace(/^\/+/, '');
+  const filePath = `/${cleanPath}`;
+
+  const hashableBase = secret + filePath + expires;
+  const token = crypto
+    .createHash('sha256')
+    .update(hashableBase)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+  return `${cdnUrl}${filePath}?token=${token}&expires=${expires}`;
 }
 
 function isBunnyConfigured() {
@@ -32,7 +56,13 @@ function warnIfNotConfigured() {
   logger.warn('BunnyCDN media storage is not configured. Upload/delete operations are disabled.');
 }
 
-function resolveStorageHost(region) {
+function resolveStorageHost(region, storageHostname = '') {
+  if (storageHostname) {
+    return storageHostname;
+  }
+  if (!region) {
+    return 'storage.bunnycdn.com';
+  }
   return region === 'de' ? 'storage.bunnycdn.com' : `${region}.storage.bunnycdn.com`;
 }
 
@@ -85,7 +115,7 @@ async function uploadToBunny(fileBuffer, fileName, folder = '') {
   }
 
   const objectPath = buildObjectPath(fileName, folder);
-  const storageHost = resolveStorageHost(config.region);
+  const storageHost = resolveStorageHost(config.region, config.storageHostname);
   const uploadUrl = `https://${storageHost}/${config.storageZone}/${objectPath}`;
 
   try {
@@ -106,7 +136,7 @@ async function uploadToBunny(fileBuffer, fileName, folder = '') {
       return null;
     }
 
-    return `${config.cdnUrl}/${objectPath}`;
+    return objectPath;
   } catch (err) {
     logger.warn('Bunny upload error', { message: err.message });
     return null;
@@ -120,12 +150,17 @@ async function deleteFromBunny(fileUrl) {
     return null;
   }
 
-  const objectPath = getDeletePathFromUrl(fileUrl, config);
+  let objectPath;
+  if (/^https?:\/\//i.test(String(fileUrl))) {
+    objectPath = getDeletePathFromUrl(fileUrl, config);
+  } else {
+    objectPath = sanitizePathPart(fileUrl);
+  }
   if (!objectPath) {
     return null;
   }
 
-  const storageHost = resolveStorageHost(config.region);
+  const storageHost = resolveStorageHost(config.region, config.storageHostname);
   const deleteUrl = `https://${storageHost}/${config.storageZone}/${objectPath}`;
 
   try {
@@ -152,4 +187,5 @@ module.exports = {
   isBunnyConfigured,
   uploadToBunny,
   deleteFromBunny,
+  generateSignedUrl,
 };

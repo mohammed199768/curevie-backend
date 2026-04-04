@@ -58,15 +58,18 @@ async function readStoredPdfBuffer(fileUrl) {
 async function deleteStoredPdf(fileUrl) {
   if (!fileUrl) return false;
 
-  if (/^https?:\/\//i.test(String(fileUrl))) {
-    return deleteFromBunny(fileUrl);
+  const localPath = resolveLocalPdfPath(fileUrl);
+  if (localPath) {
+    await fsPromises.unlink(localPath).catch(() => {});
+    return true;
   }
 
-  const localPath = resolveLocalPdfPath(fileUrl);
-  if (!localPath) return false;
-
-  await fsPromises.unlink(localPath).catch(() => {});
-  return true;
+  // If it looks like a storage path (no http), delete via Bunny storage path
+  if (!/^https?:\/\//i.test(String(fileUrl))) {
+    return deleteFromBunny(fileUrl);
+  }
+  // Legacy: handle old full CDN URLs that may still exist in DB
+  return deleteFromBunny(fileUrl);
 }
 
 module.exports = {

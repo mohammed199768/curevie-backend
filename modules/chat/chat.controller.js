@@ -8,12 +8,6 @@ function resolveMediaType(mimeType) {
   return 'file';
 }
 
-const BASE_URL = (
-  process.env.NEXT_PUBLIC_API_URL
-  || process.env.APP_BASE_URL
-  || `http://localhost:${process.env.PORT || 5000}/api/v1`
-);
-
 function createChatController(chatService) {
   async function getAuthorizedConversation(conversationId, user) {
     const conversation = await chatService.getConversationById(conversationId);
@@ -224,10 +218,7 @@ function createChatController(chatService) {
         const filePath = path.join(chatUploadsDir, filename);
         fs.writeFileSync(filePath, req.file.buffer);
 
-        const backendOrigin = BASE_URL
-          .replace(/\/api\/v1\/?$/, '')
-          .replace(/\/$/, '');
-        mediaUrl = `${backendOrigin}/uploads/chat/${filename}`;
+        mediaUrl = `/uploads/chat/${filename}`;
       }
     }
 
