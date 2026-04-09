@@ -46,6 +46,8 @@ process.on('unhandledRejection', (reason, promise) => {
 const server = app.listen(PORT, async () => {
   try {
     await pool.query('SELECT 1');
+    const { startPdfRetryJob } = require('./utils/pdf/pdf-retry-job');
+    startPdfRetryJob();
     logger.info(`Server running on port ${PORT}`);
     alertStartup(PORT);
   } catch (err) {
