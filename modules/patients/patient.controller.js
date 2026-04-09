@@ -14,64 +14,29 @@ async function listCombinedPatients(req, res) {
   const dataPatientSearchSql = search
     ? 'WHERE (p.full_name ILIKE $3 OR p.phone ILIKE $3)'
     : '';
-  const dataGuestSearchSql = search
-    ? 'AND (sr.guest_name ILIKE $3 OR sr.guest_phone ILIKE $3)'
-    : '';
   const countPatientSearchSql = search
     ? 'WHERE (p.full_name ILIKE $1 OR p.phone ILIKE $1)'
-    : '';
-  const countGuestSearchSql = search
-    ? 'AND (sr.guest_name ILIKE $1 OR sr.guest_phone ILIKE $1)'
     : '';
 
   const params = search ? [limit, offset, search] : [limit, offset];
 
   const query = `
-    WITH combined AS (
-      SELECT
-        p.id::text   AS id,
-        p.full_name  AS name,
-        p.phone      AS phone,
-        'PATIENT'    AS record_type,
-        p.created_at AS created_at
-      FROM patients p
-      ${dataPatientSearchSql}
-
-      UNION ALL
-
-      SELECT
-        (MIN(sr.created_at))::text AS id,
-        sr.guest_name              AS name,
-        sr.guest_phone             AS phone,
-        'GUEST'                    AS record_type,
-        MIN(sr.created_at)         AS created_at
-      FROM service_requests sr
-      WHERE sr.request_type = 'GUEST'
-        AND sr.guest_name IS NOT NULL
-        ${dataGuestSearchSql}
-      GROUP BY sr.guest_name, sr.guest_phone
-    )
-    SELECT * FROM combined
+    SELECT
+      p.id::text   AS id,
+      p.full_name  AS name,
+      p.phone      AS phone,
+      'PATIENT'    AS record_type,
+      p.created_at AS created_at
+    FROM patients p
+    ${dataPatientSearchSql}
     ORDER BY created_at DESC
     LIMIT $1 OFFSET $2
   `;
 
   const countQuery = `
-    WITH combined AS (
-      SELECT 1
-      FROM patients p
-      ${countPatientSearchSql}
-
-      UNION ALL
-
-      SELECT 1
-      FROM service_requests sr
-      WHERE sr.request_type = 'GUEST'
-        AND sr.guest_name IS NOT NULL
-        ${countGuestSearchSql}
-      GROUP BY sr.guest_name, sr.guest_phone
-    )
-    SELECT COUNT(*)::int AS total FROM combined
+    SELECT COUNT(*)::int AS total
+    FROM patients p
+    ${countPatientSearchSql}
   `;
 
   const countParams = search ? [search] : [];
@@ -116,15 +81,16 @@ function createPatientController(patientService, notifService) {
       limit: req.query.history_limit,
     });
 
-    const [history, recent_requests] = await Promise.all([
-      patientService.getPatientHistory(req.params.id, { page: historyPage, limit: historyLimit }),
-      patientService.getRecentPatientRequests(req.params.id),
-    ]);
+    const history = await patientService.getPatientHistory(req.params.id, {
+      page: historyPage,
+      limit: historyLimit,
+    });
 
     return res.json({
       patient,
       history: history.data,
-      recent_requests,
+      recent_requests: [],
+      total_requests: 0,
       history_pagination: {
         page: history.page,
         limit: history.limit,

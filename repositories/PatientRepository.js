@@ -163,16 +163,9 @@ class PatientRepository extends BaseRepository {
   // --- cross-table queries ---
 
   async getRecentRequests(patientId, db = null) {
-    const result = await this._query(
-      `SELECT id, request_type, service_type, status, requested_at, scheduled_at, completed_at, created_at
-       FROM service_requests
-       WHERE patient_id = $1
-       ORDER BY created_at DESC
-       LIMIT 20`,
-      [patientId],
-      db
-    );
-    return result.rows;
+    void patientId;
+    void db;
+    return [];
   }
 
   async getPointsLog(patientId, { limit, offset } = {}, db = null) {
