@@ -40,7 +40,7 @@ async function getSecureUrl(req, res) {
   }
 
   const { rows } = await db.query(
-    'SELECT id, patient_id FROM service_requests WHERE id = $1',
+    'SELECT id, patient_id, assigned_provider_id, lead_provider_id FROM service_requests WHERE id = $1',
     [requestId]
   );
 
@@ -62,17 +62,21 @@ async function getSecureUrl(req, res) {
   }
 
   if (user.role === 'PROVIDER') {
-    const { rows: assignmentRows } = await db.query(
-      'SELECT id FROM request_providers WHERE request_id = $1 AND provider_id = $2',
-      [requestId, user.id]
-    );
+    // Check direct assignment first (no extra DB query needed)
+    const isDirectlyAssigned =
+      serviceRequest.assigned_provider_id === user.id ||
+      serviceRequest.lead_provider_id === user.id;
 
-    if (!assignmentRows.length) {
-      logger.warn('Provider tried to access file from unassigned request', {
-        userId: user.id,
-        requestId,
-      });
-      return res.status(403).json({ error: 'Access denied' });
+    if (!isDirectlyAssigned) {
+      // Fall back to checking workflow tasks
+      const { rows: taskRows } = await db.query(
+        'SELECT 1 FROM request_workflow_tasks WHERE request_id = $1 AND provider_id = $2 LIMIT 1',
+        [requestId, user.id]
+      );
+      if (taskRows.length === 0) {
+        logger.warn(`Provider ${user.id} attempted to access file for request ${requestId} without assignment`);
+        return res.status(403).json({ error: 'Access denied' });
+      }
     }
 
     return res.json({ url: resolveAccessibleUrl() });
