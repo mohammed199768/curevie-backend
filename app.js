@@ -8,7 +8,7 @@ const compression = require('compression');
 require('dotenv').config();
 
 const { errorHandler, notFoundHandler } = require('./middlewares/errorHandler');
-const cultureRoutes = require('./modules/culture/culture.routes');
+// const cultureRoutes = require('./modules/culture/culture.routes');
 const filesRoutes = require('./modules/files/files.routes');
 const pool = require('./config/db');
 const redisCache = require('./utils/cache');
@@ -114,16 +114,17 @@ app.use('/api/v1/patients',      require('./modules/patients/patient.routes'));
 app.use('/api/v1/providers',     require('./modules/providers/provider.routes'));
 app.use('/api/v1/services',      require('./modules/services/service.routes'));
 app.use('/api/v1/lab',           require('./modules/labtests/labtest.routes'));
-app.use('/api/v1/lab-results/:labResultId/culture', cultureRoutes);
-app.use('/api/v1/requests',      require('./modules/requests/request.routes'));
+// app.use('/api/v1/lab-results/:labResultId/culture', cultureRoutes);
+// app.use('/api/v1/requests',      require('./modules/requests/request.routes'));
+app.use('/api/v1/cases',         require('./modules/cases/case.routes'));
 app.use('/api/v1/analytics',     require('./modules/analytics/analytics.routes'));
-app.use('/api/v1/invoices',      require('./modules/invoices/invoice.routes'));
-app.use('/api/v1/chat',          require('./modules/chat/chat.routes'));
+// app.use('/api/v1/invoices',      require('./modules/invoices/invoice.routes'));
+// app.use('/api/v1/chat',          require('./modules/chat/chat.routes'));
 app.use('/api/v1/files',         filesRoutes);
-app.use('/api/v1/payments',      require('./modules/payments/payment.routes'));
+// app.use('/api/v1/payments',      require('./modules/payments/payment.routes'));
 app.use('/api/v1/contact',       require('./modules/contact/contact.routes'));
 app.use('/api/v1/notifications', require('./modules/notifications/notification.routes'));
-app.use('/api/v1/reports',       require('./modules/reports/report.routes'));
+// app.use('/api/v1/reports',       require('./modules/reports/report.routes'));
 
 // =============================================
 // HEALTH CHECK
