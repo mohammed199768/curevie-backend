@@ -138,10 +138,25 @@ const selfOrAdmin = (req, res, next) => {
   return res.status(403).json({ message: 'Forbidden', code: 'FORBIDDEN' });
 };
 
+const providerOnly = (req, res, next) => {
+  if (req.user.role === 'PROVIDER') {
+    return next();
+  }
+  return res.status(403).json({ message: 'Provider access required', code: 'FORBIDDEN' });
+};
+
+const patientOnly = (req, res, next) => {
+  if (req.user.role === 'PATIENT') {
+    return next();
+  }
+  return res.status(403).json({ message: 'Patient access required', code: 'FORBIDDEN' });
+};
+
 // Keep generateToken for backward compatibility
 const generateToken = generateAccessToken;
 
 module.exports = {
   authenticate, guestOrAuthenticated, adminOnly, staffOnly, selfOrStaff, selfOrAdmin,
+  providerOnly, patientOnly,
   generateToken, generateAccessToken, generateRefreshToken, saveRefreshToken,
 };
