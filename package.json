@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
+    "@socket.io/redis-adapter": "^8.3.0",
     "axios": "^1.13.5",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",
@@ -35,6 +36,7 @@
     "puppeteer": "^24.39.1",
     "rate-limit-redis": "^4.3.1",
     "sharp": "^0.34.5",
+    "socket.io": "^4.8.3",
     "winston": "^3.14.2",
     "winston-daily-rotate-file": "^5.0.0",
     "xss": "^1.0.15"
