@@ -28,9 +28,11 @@ if (process.cwd() !== BACKEND_ROOT) {
   );
 }
 
+const http = require('http');
 const app = require('./app');
 const pool = require('./config/db');
 const { logger } = require('./utils/logger');
+const { initSocketServer } = require('./utils/socket');
 
 const PORT = Number(process.env.PORT || 5000);
 
@@ -43,7 +45,9 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[unhandledRejection] at:', promise, 'reason:', reason);
 });
 
-const server = app.listen(PORT, async () => {
+const server = http.createServer(app);
+initSocketServer(server);
+server.listen(PORT, async () => {
   try {
     await pool.query('SELECT 1');
     const { startPdfRetryJob } = require('./utils/pdf/pdf-retry-job');

@@ -1,198 +1,167 @@
-const BaseRepository = require('./BaseRepository');
-
-const participantTables = {
-  ADMIN: 'admins',
-  PROVIDER: 'service_providers',
-};
-
-class ChatRepository extends BaseRepository {
+class ChatRepository {
   constructor(pool) {
-    super(pool, 'conversations');
+    this.pool = pool;
   }
 
-  async getConversationById(id, db = null) {
-    return this._queryOne('SELECT * FROM conversations WHERE id = $1', [id], db);
-  }
-
-  async getParticipantByRole(id, role, db = null) {
-    const table = participantTables[role];
-    if (!table) return null;
-    return this._queryOne(`SELECT id, full_name FROM ${table} WHERE id = $1`, [id], db);
-  }
-
-  async getPatientById(id, db = null) {
-    return this._queryOne('SELECT id, full_name FROM patients WHERE id = $1 LIMIT 1', [id], db);
-  }
-
-  async getConversationByPair(subjectId, subjectRole, participantId, participantRole, db = null) {
-    return this._queryOne(
-      `SELECT * FROM conversations
-       WHERE subject_id = $1 AND subject_role = $2
-         AND participant_id = $3 AND participant_role = $4
-       LIMIT 1`,
-      [subjectId, subjectRole, participantId, participantRole], db
+  async findOrCreateRoom(case_service_id, patient_id, provider_id, client = null) {
+    const executor = client || this.pool;
+    const result = await executor.query(
+      `
+      INSERT INTO case_chat_rooms (case_service_id, patient_id, provider_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (case_service_id) DO UPDATE SET case_service_id = EXCLUDED.case_service_id
+      RETURNING *
+      `,
+      [case_service_id, patient_id, provider_id]
     );
+    return result.rows[0] || null;
   }
 
-  async insertConversation(subjectId, subjectRole, participantId, participantRole, db = null) {
-    return this._queryOne(
-      `INSERT INTO conversations (patient_id, subject_id, subject_role, participant_id, participant_role)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+  async findRoomById(room_id, client = null) {
+    const executor = client || this.pool;
+    const result = await executor.query(
+      `
+      SELECT cr.*, cs.case_id
+      FROM case_chat_rooms cr
+      JOIN case_services cs ON cs.id = cr.case_service_id
+      WHERE cr.id = $1
+      `,
+      [room_id]
+    );
+    return result.rows[0] || null;
+  }
+
+  async findRoomsByPatient(patient_id) {
+    const result = await this.pool.query(
+      `
+      SELECT cr.*, cs.case_id, s.name AS service_name,
+             sp.full_name AS provider_name
+      FROM case_chat_rooms cr
+      JOIN case_services cs ON cs.id = cr.case_service_id
+      JOIN services s ON s.id = cs.service_id
+      JOIN service_providers sp ON sp.id = cr.provider_id
+      WHERE cr.patient_id = $1
+      ORDER BY cr.created_at DESC
+      `,
+      [patient_id]
+    );
+    return result.rows;
+  }
+
+  async findRoomsByProvider(provider_id) {
+    const result = await this.pool.query(
+      `
+      SELECT cr.*, cs.case_id, s.name AS service_name,
+             p.full_name AS patient_name
+      FROM case_chat_rooms cr
+      JOIN case_services cs ON cs.id = cr.case_service_id
+      JOIN services s ON s.id = cs.service_id
+      JOIN patients p ON p.id = cr.patient_id
+      WHERE cr.provider_id = $1
+      ORDER BY cr.created_at DESC
+      `,
+      [provider_id]
+    );
+    return result.rows;
+  }
+
+  async findRoomsByCase(case_id) {
+    const result = await this.pool.query(
+      `
+      SELECT cr.*, s.name AS service_name,
+             sp.full_name AS provider_name,
+             p.full_name AS patient_name
+      FROM case_chat_rooms cr
+      JOIN case_services cs ON cs.id = cr.case_service_id
+      JOIN services s ON s.id = cs.service_id
+      JOIN service_providers sp ON sp.id = cr.provider_id
+      JOIN patients p ON p.id = cr.patient_id
+      WHERE cs.case_id = $1
+      ORDER BY cr.created_at ASC
+      `,
+      [case_id]
+    );
+    return result.rows;
+  }
+
+  async saveMessage(data, client = null) {
+    const executor = client || this.pool;
+    const result = await executor.query(
+      `
+      INSERT INTO case_chat_messages
+        (room_id, sender_id, sender_role, content, file_url)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+      `,
       [
-        subjectRole === 'PATIENT' ? subjectId : null,
-        subjectId, subjectRole, participantId, participantRole,
-      ], db
+        data.room_id,
+        data.sender_id,
+        data.sender_role,
+        data.content || null,
+        data.file_url || null,
+      ]
     );
+    return result.rows[0] || null;
   }
 
-  async listMyConversations(userId, userRole, { limit = 50, offset = 0 } = {}, db = null) {
-    const params = [userId];
-    let whereSql = `
-      c.subject_id = $1
-      AND c.subject_role = 'PATIENT'
-      AND c.participant_role = 'ADMIN'
-    `;
+  async getMessages(room_id, { limit = 50, before = null } = {}) {
+    const safeLimit = Math.max(Number(limit) || 50, 1);
+    let result;
 
-    if (userRole === 'ADMIN') {
-      whereSql = "c.participant_id = $1 AND c.participant_role = 'ADMIN'";
-    } else if (userRole === 'PROVIDER') {
-      whereSql = `
-        c.subject_id = $1
-        AND c.subject_role = 'PROVIDER'
-        AND c.participant_role = 'ADMIN'
-      `;
+    if (before) {
+      result = await this.pool.query(
+        `
+        SELECT *
+        FROM case_chat_messages
+        WHERE room_id = $1 AND created_at < $2
+        ORDER BY created_at DESC
+        LIMIT $3
+        `,
+        [room_id, before, safeLimit]
+      );
+    } else {
+      result = await this.pool.query(
+        `
+        SELECT *
+        FROM case_chat_messages
+        WHERE room_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        `,
+        [room_id, safeLimit]
+      );
     }
 
-    const result = await this._query(
-      `SELECT
-        c.id, c.patient_id, c.subject_id, c.subject_role,
-        c.participant_id, c.participant_role, c.last_message_at, c.created_at,
-        p.full_name AS patient_name,
-        provider_subject.full_name AS provider_subject_name,
-        CASE
-          WHEN c.participant_role = 'ADMIN' THEN a.full_name
-          WHEN c.participant_role = 'PROVIDER' THEN provider_participant.full_name
-        END AS participant_name,
-        lm.id AS last_message_id,
-        lm.sender_id AS last_message_sender_id,
-        lm.sender_role AS last_message_sender_role,
-        lm.body AS last_message_body,
-        lm.media_url AS last_message_media_url,
-        lm.media_type AS last_message_media_type,
-        lm.created_at AS last_message_created_at,
-        COALESCE(uc.unread_count, 0)::int AS unread_count
-      FROM conversations c
-      LEFT JOIN patients p ON c.subject_role = 'PATIENT' AND p.id = c.subject_id
-      LEFT JOIN service_providers provider_subject ON c.subject_role = 'PROVIDER' AND provider_subject.id = c.subject_id
-      LEFT JOIN admins a ON c.participant_role = 'ADMIN' AND a.id = c.participant_id
-      LEFT JOIN service_providers provider_participant ON c.participant_role = 'PROVIDER' AND provider_participant.id = c.participant_id
-      LEFT JOIN LATERAL (
-        SELECT m.id, m.sender_id, m.sender_role, m.body, m.media_url, m.media_type, m.created_at
-        FROM messages m WHERE m.conversation_id = c.id
-        ORDER BY m.created_at DESC, m.id DESC LIMIT 1
-      ) lm ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT COUNT(*)::int AS unread_count
-        FROM messages m
-        WHERE m.conversation_id = c.id AND m.is_read = FALSE AND m.sender_id <> $1
-      ) uc ON TRUE
-      WHERE ${whereSql}
-      ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.created_at DESC
-      LIMIT $2
-      OFFSET $3`,
-      [...params, limit, offset], db
-    );
-
-    return result.rows;
+    return result.rows.reverse();
   }
 
-  async listPatientParticipants(db = null) {
-    const result = await this._query(
-      `SELECT a.id, a.full_name AS participant_name, 'ADMIN'::text AS participant_role
-       FROM admins a ORDER BY a.full_name ASC`,
-      [], db
+  async markAsRead(room_id, reader_id) {
+    const result = await this.pool.query(
+      `
+      UPDATE case_chat_messages
+      SET is_read = TRUE
+      WHERE room_id = $1
+        AND sender_id != $2
+        AND is_read = FALSE
+      RETURNING id
+      `,
+      [room_id, reader_id]
     );
     return result.rows;
   }
 
-  async listAdminPatients(adminId, { limit, offset } = {}, db = null) {
-    const [result, countResult] = await Promise.all([
-      this._query(
-        `SELECT
-          p.id AS patient_id, p.full_name AS patient_name,
-          c.id AS conversation_id, c.last_message_at,
-          c.created_at AS conversation_created_at,
-          lm.id AS last_message_id, lm.sender_id AS last_message_sender_id,
-          lm.sender_role AS last_message_sender_role, lm.body AS last_message_body,
-          lm.media_url AS last_message_media_url, lm.media_type AS last_message_media_type,
-          lm.created_at AS last_message_created_at,
-          COALESCE(uc.unread_count, 0)::int AS unread_count
-        FROM patients p
-        LEFT JOIN conversations c
-          ON c.subject_role = 'PATIENT' AND c.subject_id = p.id
-          AND c.participant_id = $1 AND c.participant_role = 'ADMIN'
-        LEFT JOIN LATERAL (
-          SELECT m.id, m.sender_id, m.sender_role, m.body, m.media_url, m.media_type, m.created_at
-          FROM messages m WHERE c.id IS NOT NULL AND m.conversation_id = c.id
-          ORDER BY m.created_at DESC, m.id DESC LIMIT 1
-        ) lm ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT COUNT(*)::int AS unread_count
-          FROM messages m
-          WHERE c.id IS NOT NULL AND m.conversation_id = c.id
-            AND m.is_read = FALSE AND m.sender_id <> $1
-        ) uc ON TRUE
-        ORDER BY LOWER(p.full_name) ASC, p.id ASC
-        LIMIT $2 OFFSET $3`,
-        [adminId, limit, offset], db
-      ),
-      this._query('SELECT COUNT(*)::int AS total FROM patients', [], db),
-    ]);
-
-    return { rows: result.rows, total: parseInt(countResult.rows[0].total) };
-  }
-
-  async countMessages(conversationId, db = null) {
-    const result = await this._query(
-      'SELECT COUNT(*)::int AS total FROM messages WHERE conversation_id = $1',
-      [conversationId], db
+  async countUnread(room_id, reader_id) {
+    const result = await this.pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM case_chat_messages
+      WHERE room_id = $1
+        AND sender_id != $2
+        AND is_read = FALSE
+      `,
+      [room_id, reader_id]
     );
-    return result.rows[0].total;
-  }
-
-  async listMessages(conversationId, limit, offset, db = null) {
-    const result = await this._query(
-      `SELECT id, conversation_id, sender_id, sender_role, body, media_url, media_type, is_read, created_at
-       FROM messages WHERE conversation_id = $1
-       ORDER BY created_at DESC, id DESC
-       LIMIT $2 OFFSET $3`,
-      [conversationId, limit, offset], db
-    );
-    return result.rows;
-  }
-
-  async insertMessage({ conversationId, senderId, senderRole, body, mediaUrl, mediaType }, db = null) {
-    return this._queryOne(
-      `INSERT INTO messages (conversation_id, sender_id, sender_role, body, media_url, media_type)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [conversationId, senderId, senderRole, body || null, mediaUrl || null, mediaType || null], db
-    );
-  }
-
-  async updateConversationLastMessage(conversationId, timestamp, db = null) {
-    await this._query(
-      'UPDATE conversations SET last_message_at = $1 WHERE id = $2',
-      [timestamp, conversationId], db
-    );
-  }
-
-  async markMessagesAsRead(conversationId, userId, db = null) {
-    const result = await this._query(
-      `UPDATE messages SET is_read = TRUE
-       WHERE conversation_id = $1 AND is_read = FALSE AND sender_id <> $2`,
-      [conversationId, userId], db
-    );
-    return result.rowCount;
+    return result.rows[0]?.count || 0;
   }
 }
 
