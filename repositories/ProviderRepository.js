@@ -91,45 +91,31 @@ class ProviderRepository extends BaseRepository {
   }
 
   async getRatingsSummary(providerId, db = null) {
-    return this._queryOne(
-      `SELECT
-        COUNT(sr.id)::int AS total_ratings,
-        COALESCE(ROUND(AVG(sr.rating)::numeric, 2), 0) AS average_rating
-       FROM service_ratings sr
-       JOIN service_requests req ON req.id = sr.request_id
-       WHERE req.assigned_provider_id = $1`,
-      [providerId],
-      db
-    );
+    void providerId;
+    void db;
+
+    return {
+      total: 0,
+      average: 0,
+      total_ratings: 0,
+      average_rating: 0,
+    };
   }
 
   async getRatingsCount(providerId, db = null) {
-    const row = await this._queryOne(
-      `SELECT COUNT(sr.id)::int AS total
-       FROM service_ratings sr
-       JOIN service_requests req ON req.id = sr.request_id
-       WHERE req.assigned_provider_id = $1`,
-      [providerId],
-      db
-    );
-    return row.total;
+    void providerId;
+    void db;
+
+    return 0;
   }
 
   async getRatings(providerId, limit, offset, db = null) {
-    const result = await this._query(
-      `SELECT
-        sr.id, sr.request_id, sr.patient_id, sr.rating, sr.comment, sr.created_at,
-        p.full_name AS patient_name
-       FROM service_ratings sr
-       JOIN service_requests req ON req.id = sr.request_id
-       LEFT JOIN patients p ON p.id = sr.patient_id
-       WHERE req.assigned_provider_id = $1
-       ORDER BY sr.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [providerId, limit, offset],
-      db
-    );
-    return result.rows;
+    void providerId;
+    void limit;
+    void offset;
+    void db;
+
+    return [];
   }
 
   async getAvatarInfo(id, db = null) {

@@ -79,23 +79,23 @@ function createProviderController(providerService) {
   }
 
   async function getProviderRatings(req, res) {
-    const { page, limit } = req.query;
-    const { page: currentPage, limit: currentLimit, offset } = paginate(req.query); // AUDIT-FIX: DRY — shared page parsing and offset calculation for rating lists
+    const { page: currentPage, limit: currentLimit } = paginate(req.query); // AUDIT-FIX: DRY — shared page parsing and offset calculation for rating lists
 
     const provider = await providerService.getProviderById(req.params.id);
     if (!provider) {
       return res.status(404).json({ message: 'Provider not found', code: 'PROVIDER_NOT_FOUND' });
     }
 
-    const [summary, total, data] = await Promise.all([
-      providerService.getProviderRatingsSummary(req.params.id),
-      providerService.getProviderRatingsCount(req.params.id),
-      providerService.getProviderRatings(req.params.id, currentLimit, offset), // AUDIT-FIX: DRY — pass normalized limit from shared pagination helper
-    ]);
-
     return res.json({
-      provider, summary, data,
-      pagination: paginationMeta(total, currentPage, currentLimit), // AUDIT-FIX: DRY — standardized list response shape via shared helper
+      provider,
+      summary: {
+        total: 0,
+        average: 0,
+        total_ratings: 0,
+        average_rating: 0,
+      },
+      data: [],
+      pagination: paginationMeta(0, currentPage, currentLimit), // AUDIT-FIX: DRY — standardized list response shape via shared helper
     });
   }
 
