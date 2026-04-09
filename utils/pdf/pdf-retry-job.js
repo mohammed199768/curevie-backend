@@ -53,11 +53,38 @@ async function runPdfRetryTick() {
       const caseId = reservedRow.case_id;
       const attempt = reservedRow.pdf_generation_attempts;
 
-      logger.warn('PDF retry job: case PDF generation not yet implemented', {
-        caseId,
-        attempt,
-      });
-      continue;
+      try {
+        const { generateCaseReportPdf } = require('./case-report.generator');
+
+        const pdfUrl = await generateCaseReportPdf(caseId);
+
+        if (!pdfUrl) {
+          throw new Error('generateCaseReportPdf returned empty URL');
+        }
+
+        await pool.query(
+          `UPDATE medical_reports
+           SET pdf_url = $1,
+               status = 'PUBLISHED',
+               published_at = NOW(),
+               updated_at = NOW()
+           WHERE case_id = $2`,
+          [pdfUrl, caseId]
+        );
+
+        succeeded += 1;
+        logger.info('PDF retry job generated case report successfully', {
+          caseId,
+          attempt,
+          pdfUrl,
+        });
+      } catch (error) {
+        logger.warn('PDF retry job failed to generate case report', {
+          caseId,
+          attempt,
+          error: error.message,
+        });
+      }
     }
 
     logger.info('PDF retry job tick completed', {

@@ -9,6 +9,7 @@ const pool = require('../../config/db');
 const asyncHandler = require('../../utils/asyncHandler');
 const ChatRepository = require('../../repositories/ChatRepository');
 const caseController = require('./case.controller');
+const reportRoutes = require('./case-report.routes');
 
 const router = express.Router();
 const chatRepo = new ChatRepository(pool);
@@ -76,5 +77,7 @@ router.get('/chat/rooms/:room_id/messages', authenticate, asyncHandler(async (re
 
   return res.json({ data: messages });
 }));
+
+router.use('/', reportRoutes);
 
 module.exports = router;
