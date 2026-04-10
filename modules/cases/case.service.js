@@ -49,9 +49,12 @@ class CaseService {
       await client.query('BEGIN');
 
       const createdCase = await this.caseRepo.createCase({
-        patient_id: patientId,
+        patient_id: patientId || null,
         package_id: body?.package_id || null,
         notes: body?.notes || null,
+        guest_name: body?.guest_name || null,
+        guest_phone: body?.guest_phone || null,
+        guest_address: body?.guest_address || null,
       }, client);
 
       const createdServices = [];
@@ -92,6 +95,27 @@ class CaseService {
     } finally {
       client.release();
     }
+  }
+
+  async createGuestCase(body) {
+    const guestName = body?.guest_name?.trim?.() || body?.guest_name || null;
+    const guestPhone = body?.guest_phone?.trim?.() || body?.guest_phone || null;
+    const servicesInput = body?.services;
+
+    if (!guestName || !guestPhone || !Array.isArray(servicesInput) || servicesInput.length < 1) {
+      throw new AppError(
+        'guest_name, guest_phone, and services are required',
+        400,
+        'GUEST_CASE_FIELDS_REQUIRED'
+      );
+    }
+
+    return this.createCase(null, {
+      ...body,
+      guest_name: guestName,
+      guest_phone: guestPhone,
+      guest_address: body?.guest_address || null,
+    });
   }
 
   async getCaseById(caseId, requestingUser) {

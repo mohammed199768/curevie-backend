@@ -8,11 +8,19 @@ class CaseRepository extends BaseRepository {
   async createCase(data, client = null) {
     return this._queryOne(
       `
-      INSERT INTO cases (patient_id, package_id, notes)
-      VALUES ($1, $2, $3)
+      INSERT INTO cases
+        (patient_id, package_id, notes, guest_name, guest_phone, guest_address)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
       `,
-      [data.patient_id, data.package_id || null, data.notes || null],
+      [
+        data.patient_id || null,
+        data.package_id || null,
+        data.notes || null,
+        data.guest_name || null,
+        data.guest_phone || null,
+        data.guest_address || null,
+      ],
       client
     );
   }
@@ -67,6 +75,20 @@ class CaseRepository extends BaseRepository {
       cases: rowsResult.rows,
       total: countResult.rows[0]?.total || 0,
     };
+  }
+
+  async findCasesByGuest(guestPhone, client = null) {
+    const result = await this._query(
+      `
+      SELECT c.* FROM cases c
+      WHERE c.guest_phone = $1
+      ORDER BY c.created_at DESC
+      `,
+      [guestPhone],
+      client
+    );
+
+    return result.rows;
   }
 
   async findAllCases({ page = 1, limit = 10, status = null, patient_id = null } = {}, client = null) {

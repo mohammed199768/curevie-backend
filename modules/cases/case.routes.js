@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   authenticate,
+  guestOrAuthenticated,
   adminOnly,
   staffOnly,
   patientOnly,
@@ -8,15 +9,35 @@ const {
 const pool = require('../../config/db');
 const asyncHandler = require('../../utils/asyncHandler');
 const ChatRepository = require('../../repositories/ChatRepository');
+const CaseService = require('./case.service');
 const caseController = require('./case.controller');
 const reportRoutes = require('./case-report.routes');
 
 const router = express.Router();
 const chatRepo = new ChatRepository(pool);
+const caseService = new CaseService(pool);
 
 router.get('/health', (req, res) => {
   res.json({ status: 'cases module ok' });
 });
+
+router.post('/public', guestOrAuthenticated, asyncHandler(async (req, res) => {
+  const { guest_name, guest_phone, guest_address, services, notes } = req.body || {};
+
+  if (!guest_name || !guest_phone || !services?.length) {
+    return res.status(400).json({ error: 'guest_name, guest_phone, and services are required' });
+  }
+
+  const result = await caseService.createGuestCase({
+    guest_name,
+    guest_phone,
+    guest_address,
+    services,
+    notes,
+  });
+
+  return res.status(201).json({ message: 'Case created', data: result });
+}));
 
 router.post('/', authenticate, patientOnly, caseController.createCase);
 router.get('/', authenticate, caseController.listCases);

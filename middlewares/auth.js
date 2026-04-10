@@ -89,20 +89,16 @@ const guestOrAuthenticated = async (req, res, next) => {
       const { isTokenBlacklisted } = require('../utils/cache');
       const blacklisted = await isTokenBlacklisted(decoded.jti);
       if (blacklisted) {
-        return res.status(401).json({
-          message: 'Token has been revoked. Please log in again.',
-          code: 'TOKEN_REVOKED',
-        });
+        req.user = null;
+        return next();
       }
     }
 
     req.user = decoded;
     return next();
   } catch (err) {
-    if (err.name === 'TokenExpiredError') {
-      return res.status(401).json({ message: 'Token expired', code: 'TOKEN_EXPIRED' });
-    }
-    return res.status(401).json({ message: 'Invalid token', code: 'INVALID_TOKEN' });
+    req.user = null;
+    return next();
   }
 };
 
