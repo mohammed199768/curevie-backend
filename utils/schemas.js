@@ -109,7 +109,11 @@ const categorySchema = Joi.object({
 
 const createServiceSchema = Joi.object({
   name: Joi.string().min(2).max(150).required().trim(),
+  name_ar: Joi.string().trim().max(200).allow('', null).optional(),
+  name_en: Joi.string().trim().max(200).allow('', null).optional(),
   description: Joi.string().max(1000).trim().allow('', null),
+  description_ar: Joi.string().trim().allow('', null).optional(),
+  description_en: Joi.string().trim().allow('', null).optional(),
   price: Joi.number().positive().precision(2).required(),
   category_id: uuid,
   is_vip_exclusive: Joi.boolean().default(false),
@@ -117,7 +121,11 @@ const createServiceSchema = Joi.object({
 
 const updateServiceSchema = Joi.object({
   name: Joi.string().min(2).max(150).trim(),
+  name_ar: Joi.string().trim().max(200).allow('', null).optional(),
+  name_en: Joi.string().trim().max(200).allow('', null).optional(),
   description: Joi.string().max(1000).trim().allow('', null),
+  description_ar: Joi.string().trim().allow('', null).optional(),
+  description_en: Joi.string().trim().allow('', null).optional(),
   price: Joi.number().positive().precision(2),
   category_id: uuid,
   is_vip_exclusive: Joi.boolean(),

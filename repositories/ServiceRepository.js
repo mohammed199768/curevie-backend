@@ -125,11 +125,26 @@ class ServiceRepository extends BaseRepository {
     return { data: dataResult.rows, total: countResult.rows[0].total };
   }
 
-  async createService({ name, description, price, category_id, is_vip_exclusive }, db = null) {
+  async createService(
+    { name, name_ar, name_en, description, description_ar, description_en, price, category_id, is_vip_exclusive },
+    db = null
+  ) {
     return this._queryOne(
-      `INSERT INTO services (name, description, price, category_id, is_vip_exclusive)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [name, description || null, price, category_id || null, Boolean(is_vip_exclusive)],
+      `INSERT INTO services (
+        name, name_ar, name_en, description, description_ar, description_en, price, category_id, is_vip_exclusive
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [
+        name,
+        name_ar || null,
+        name_en || null,
+        description || null,
+        description_ar || null,
+        description_en || null,
+        price,
+        category_id || null,
+        Boolean(is_vip_exclusive),
+      ],
       db
     );
   }
@@ -146,7 +161,23 @@ class ServiceRepository extends BaseRepository {
   }
 
   async updateService(id, data, db = null) {
-    return this.update(id, data, ['name', 'description', 'price', 'category_id', 'is_vip_exclusive', 'is_active'], db);
+    return this.update(
+      id,
+      data,
+      [
+        'name',
+        'name_ar',
+        'name_en',
+        'description',
+        'description_ar',
+        'description_en',
+        'price',
+        'category_id',
+        'is_vip_exclusive',
+        'is_active',
+      ],
+      db
+    );
   }
 
   async deactivateService(id, db = null) {
