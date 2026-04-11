@@ -347,14 +347,18 @@ class CaseService {
 
     try {
       await client.query('BEGIN');
+      logger.info('CLOSE_STEP_1_BEGIN');
 
       await this.caseRepo.closeCase(caseId, adminId, notes || null, client);
+      logger.info('CLOSE_STEP_2_CASE_CLOSED');
 
       const services = await this.caseRepo.findServicesByCase(caseId, client);
+      logger.info('CLOSE_STEP_3_SERVICES', { count: services.length });
       const invoiceResult = await client.query(
         'SELECT * FROM case_invoices WHERE case_id = $1 LIMIT 1',
         [caseId]
       );
+      logger.info('CLOSE_STEP_4_INVOICE', { found: !!invoiceResult.rows[0] });
       const invoice = invoiceResult.rows[0] || null;
 
       let packageData = null;
@@ -365,6 +369,7 @@ class CaseService {
         );
         packageData = packageResult.rows[0] || null;
       }
+      logger.info('CLOSE_STEP_5_PACKAGE');
 
       const providersMap = new Map();
       services.forEach((service) => {
@@ -392,6 +397,7 @@ class CaseService {
         invoice_data: invoice,
         package_data: packageData,
       }, client);
+      logger.info('CLOSE_STEP_6_SNAPSHOT', { snapshotId: snapshot?.id });
 
       await client.query(
         `
@@ -401,6 +407,7 @@ class CaseService {
         `,
         [caseId]
       );
+      logger.info('CLOSE_STEP_7_INVOICE_VISIBLE');
 
       await this.caseRepo.addLifecycleEvent({
         case_id: caseId,
@@ -409,10 +416,12 @@ class CaseService {
         event_type: 'CASE_CLOSED',
         notes: notes || null,
       }, client);
+      logger.info('CLOSE_STEP_8_LIFECYCLE');
 
       const closedCase = await this.caseRepo.findCaseById(caseId, client);
 
       await client.query('COMMIT');
+      logger.info('CLOSE_STEP_9_COMMITTED');
       return {
         ...closedCase,
         snapshot_id: snapshot.id,
