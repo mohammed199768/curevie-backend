@@ -1,3 +1,4 @@
+const pool = require('../../config/db');
 const { AppError } = require('../../middlewares/errorHandler');
 const CaseRepository = require('../../repositories/CaseRepository');
 
@@ -231,6 +232,19 @@ class CaseService {
         }
 
         await this.caseRepo.assignProvider(assignment.case_service_id, assignment.provider_id, client);
+
+        // Create chat room for this service if patient exists
+        if (currentCase.patient_id) {
+          await pool.query(
+            `INSERT INTO case_chat_rooms 
+              (case_service_id, patient_id, provider_id)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (case_service_id) DO UPDATE 
+               SET provider_id = EXCLUDED.provider_id`,
+            [assignment.case_service_id, currentCase.patient_id, assignment.provider_id]
+          );
+        }
+
         await this.caseRepo.addLifecycleEvent({
           case_id: caseId,
           actor_id: adminId,
