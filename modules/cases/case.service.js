@@ -326,6 +326,16 @@ class CaseService {
 
   async closeCase(caseId, adminId, notes) {
     const existingCase = await this.caseRepo.findCaseById(caseId);
+    const { logger } = require('../../utils/logger');
+    logger.info('CLOSE_CASE_DEBUG', {
+      caseId,
+      adminId,
+      existingCase: existingCase ? {
+        id: existingCase.id,
+        status: existingCase.status,
+        patient_id: existingCase.patient_id,
+      } : null,
+    });
     if (!existingCase) {
       throw new AppError('Case not found', 404, 'NOT_FOUND');
     }
