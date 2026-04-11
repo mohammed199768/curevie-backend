@@ -92,6 +92,14 @@ class CaseService {
       };
     } catch (error) {
       await client.query('ROLLBACK');
+      const { logger } = require('../../utils/logger');
+      logger.error('CLOSE_CASE_ERROR', {
+        caseId,
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+        stack: error.stack?.split('\n')[0]
+      });
       throw error;
     } finally {
       client.release();
