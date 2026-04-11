@@ -171,6 +171,24 @@ class CaseRepository extends BaseRepository {
     return result.rows;
   }
 
+  async findProviderFilesByCase(caseId, client = null) {
+    const result = await this._query(
+      `
+      SELECT cpf.*, s.name as service_name, sp.full_name as provider_name
+      FROM case_provider_files cpf
+      JOIN case_services cs ON cs.id = cpf.case_service_id
+      LEFT JOIN services s ON s.id = cs.service_id
+      LEFT JOIN service_providers sp ON sp.id = cpf.uploaded_by
+      WHERE cs.case_id = $1
+      ORDER BY cpf.created_at DESC
+      `,
+      [caseId],
+      client
+    );
+
+    return result.rows;
+  }
+
   async assignProvider(caseServiceId, providerId, client = null) {
     return this._queryOne(
       `

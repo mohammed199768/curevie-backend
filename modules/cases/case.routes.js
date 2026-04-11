@@ -3,9 +3,11 @@ const {
   authenticate,
   guestOrAuthenticated,
   adminOnly,
+  providerOnly,
   staffOnly,
   patientOnly,
 } = require('../../middlewares/auth');
+const multer = require('multer');
 const pool = require('../../config/db');
 const asyncHandler = require('../../utils/asyncHandler');
 const ChatRepository = require('../../repositories/ChatRepository');
@@ -16,6 +18,7 @@ const reportRoutes = require('./case-report.routes');
 const router = express.Router();
 const chatRepo = new ChatRepository(pool);
 const caseService = new CaseService(pool);
+const upload = multer({ storage: multer.memoryStorage() });
 
 router.get('/health', (req, res) => {
   res.json({ status: 'cases module ok' });
@@ -42,6 +45,101 @@ router.post('/public', guestOrAuthenticated, asyncHandler(async (req, res) => {
 router.post('/', authenticate, patientOnly, caseController.createCase);
 router.get('/', authenticate, caseController.listCases);
 router.get('/:id', authenticate, caseController.getCaseById);
+router.post(
+  '/:id/services/:serviceId/files',
+  authenticate,
+  providerOnly,
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    const { caseId, serviceId } = { caseId: req.params.id, serviceId: req.params.serviceId };
+    const file = req.file;
+    const is_sick_leave = req.body.is_sick_leave === 'true';
+
+    if (!file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const { logger } = require('../../utils/logger');
+    const path = require('path');
+    const fs = require('fs');
+    const uploadDir = '/app/uploads/case-files';
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    const fileName = `${Date.now()}-${file.originalname}`;
+    const filePath = path.join(uploadDir, fileName);
+    fs.writeFileSync(filePath, file.buffer);
+    const fileUrl = `/uploads/case-files/${fileName}`;
+
+    const fileType = file.mimetype === 'application/pdf' ? 'PDF' : 'IMAGE';
+
+    const { rows } = await pool.query(
+      `INSERT INTO case_provider_files 
+        (case_service_id, file_url, file_type, is_sick_leave, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [serviceId, fileUrl, fileType, is_sick_leave, req.user.id]
+    );
+
+    return res.status(201).json({ data: rows[0] });
+  })
+);
+router.put(
+  '/:id/services/:serviceId/start',
+  authenticate,
+  providerOnly,
+  asyncHandler(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE case_services 
+       SET status = 'IN_PROGRESS', updated_at = NOW()
+       WHERE id = $1 AND case_id = $2 AND provider_id = $3
+       RETURNING *`,
+      [req.params.serviceId, req.params.id, req.user.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Service not found or access denied' });
+    }
+
+    await pool.query(
+      `UPDATE cases SET status = 'IN_PROGRESS', updated_at = NOW()
+       WHERE id = $1 AND status NOT IN ('COMPLETED', 'CLOSED', 'CANCELLED')`,
+      [req.params.id]
+    );
+
+    return res.json({ data: rows[0] });
+  })
+);
+router.put(
+  '/:id/services/:serviceId/complete',
+  authenticate,
+  providerOnly,
+  asyncHandler(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE case_services 
+       SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND case_id = $2 AND provider_id = $3
+       RETURNING *`,
+      [req.params.serviceId, req.params.id, req.user.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Service not found or access denied' });
+    }
+
+    const { rows: allServices } = await pool.query(
+      `SELECT status FROM case_services WHERE case_id = $1`,
+      [req.params.id]
+    );
+    const allDone = allServices.every((s) =>
+      s.status === 'COMPLETED' || s.status === 'CANCELLED'
+    );
+    if (allDone) {
+      await pool.query(
+        `UPDATE cases SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`,
+        [req.params.id]
+      );
+    }
+
+    return res.json({ data: rows[0] });
+  })
+);
 router.post('/:id/assign-team', authenticate, adminOnly, caseController.assignTeam);
 router.post('/:id/appointments', authenticate, adminOnly, caseController.addAppointment);
 router.post('/:id/close', authenticate, adminOnly, caseController.closeCase);

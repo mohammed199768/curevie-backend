@@ -128,15 +128,22 @@ class CaseService {
       throw new AppError('Access denied', 403, 'FORBIDDEN');
     }
 
-    const [services, appointments] = await Promise.all([
+    const [services, appointments, providerFiles] = await Promise.all([
       this.caseRepo.findServicesByCase(caseId),
       this.caseRepo.findAppointmentsByCase(caseId),
+      this.caseRepo.findProviderFilesByCase(caseId),
     ]);
+
+    const servicesWithFiles = services.map((service) => ({
+      ...service,
+      provider_files: providerFiles.filter((f) => f.case_service_id === service.id),
+    }));
 
     return {
       case: currentCase,
-      services,
+      services: servicesWithFiles,
       appointments,
+      provider_files: providerFiles,
     };
   }
 
