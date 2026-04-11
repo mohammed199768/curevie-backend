@@ -235,7 +235,7 @@ class CaseService {
 
         // Create chat room for this service if patient exists
         if (currentCase.patient_id) {
-          await pool.query(
+          await client.query(
             `INSERT INTO case_chat_rooms 
               (case_service_id, patient_id, provider_id)
              VALUES ($1, $2, $3)
