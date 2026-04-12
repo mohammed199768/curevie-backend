@@ -402,6 +402,8 @@ class CaseService {
       }
       logger.info('CLOSE_STEP_6_SNAPSHOT', { snapshotId: snapshot?.id });
 
+      await this.caseRepo.ensureMedicalReportRecord(caseId, client);
+
       await client.query(
         `
         UPDATE case_invoices

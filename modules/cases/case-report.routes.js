@@ -46,6 +46,21 @@ async function getReportContext(caseId) {
   return result.rows[0] || null;
 }
 
+async function ensureMedicalReportRecord(caseId) {
+  const result = await pool.query(
+    `
+    INSERT INTO medical_reports (case_id, status)
+    VALUES ($1, 'DRAFT')
+    ON CONFLICT (case_id) DO UPDATE
+    SET updated_at = NOW()
+    RETURNING *
+    `,
+    [caseId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function ensureReportAccess(req, res, reportRecord) {
   if (!reportRecord) {
     res.status(404).json({ message: 'Report not found', code: 'NOT_FOUND' });
@@ -101,14 +116,7 @@ router.post('/:id/report/generate', authenticate, adminOnly, asyncHandler(async 
     return res.status(400).json({ message: 'Case must be CLOSED before report generation', code: 'INVALID_CASE_STATUS' });
   }
 
-  const reportResult = await pool.query(
-    'SELECT id FROM medical_reports WHERE case_id = $1 LIMIT 1',
-    [id]
-  );
-
-  if (!reportResult.rows[0]) {
-    return res.status(404).json({ message: 'medical_reports row not found for case', code: 'REPORT_RECORD_NOT_FOUND' });
-  }
+  await ensureMedicalReportRecord(id);
 
   const pdfUrl = await generateCaseReportPdf(id);
   if (!pdfUrl) {
@@ -160,6 +168,8 @@ router.post('/:id/sick-leave/generate', authenticate, adminOnly, asyncHandler(as
   if (!fileRecord.is_sick_leave) {
     return res.status(400).json({ message: 'Selected file is not a sick leave file', code: 'INVALID_FILE_TYPE' });
   }
+
+  await ensureMedicalReportRecord(id);
 
   const url = await generateSickLeavePdf(id, fileRecord);
   if (!url) {

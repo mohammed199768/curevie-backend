@@ -335,6 +335,20 @@ class CaseRepository extends BaseRepository {
     );
   }
 
+  async ensureMedicalReportRecord(caseId, client = null) {
+    return this._queryOne(
+      `
+      INSERT INTO medical_reports (case_id, status)
+      VALUES ($1, 'DRAFT')
+      ON CONFLICT (case_id) DO UPDATE
+      SET updated_at = NOW()
+      RETURNING *
+      `,
+      [caseId],
+      client
+    );
+  }
+
   async createInvoice(data, client = null) {
     return this._queryOne(
       `
