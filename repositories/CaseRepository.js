@@ -30,8 +30,8 @@ class CaseRepository extends BaseRepository {
       `
       SELECT
         c.*,
-        p.full_name AS patient_name,
-        p.phone AS patient_phone,
+        COALESCE(p.full_name, c.guest_name) AS patient_name,
+        COALESCE(p.phone, c.guest_phone) AS patient_phone,
         p.date_of_birth AS patient_dob,
         p.gender AS patient_gender,
         p.allergies AS patient_allergies,
@@ -101,7 +101,10 @@ class CaseRepository extends BaseRepository {
     const [rowsResult, countResult] = await Promise.all([
       this._query(
         `
-        SELECT c.*, p.full_name AS patient_name, p.phone AS patient_phone
+        SELECT
+          c.*,
+          COALESCE(p.full_name, c.guest_name) AS patient_name,
+          COALESCE(p.phone, c.guest_phone) AS patient_phone
         FROM cases c
         LEFT JOIN patients p ON p.id = c.patient_id
         WHERE ($1::text IS NULL OR c.status::text = $1)
