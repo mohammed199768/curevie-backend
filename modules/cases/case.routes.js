@@ -44,6 +44,30 @@ router.post('/public', guestOrAuthenticated, asyncHandler(async (req, res) => {
 
 router.post('/', authenticate, patientOnly, caseController.createCase);
 router.get('/', authenticate, caseController.listCases);
+router.get('/chat/rooms/:room_id/messages', authenticate, asyncHandler(async (req, res) => {
+  const room = await chatRepo.findRoomById(req.params.room_id);
+
+  if (!room) {
+    return res.status(404).json({ message: 'Room not found', code: 'NOT_FOUND' });
+  }
+
+  const canAccess =
+    req.user.role === 'ADMIN' ||
+    (req.user.role === 'PATIENT' && room.patient_id === req.user.id) ||
+    (req.user.role === 'PROVIDER' && room.provider_id === req.user.id);
+
+  if (!canAccess) {
+    return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
+  }
+
+  const messages = await chatRepo.getMessages(room.id, {
+    limit: req.query.limit || 50,
+    before: req.query.before || null,
+  });
+  await chatRepo.markAsRead(room.id, req.user.id);
+
+  return res.json({ data: messages });
+}));
 router.get('/:id', authenticate, caseController.getCaseById);
 router.post(
   '/:id/services/:serviceId/files',
@@ -171,30 +195,6 @@ router.get('/:id/chat-rooms', authenticate, asyncHandler(async (req, res) => {
   }
 
   return res.json({ data: rooms });
-}));
-router.get('/chat/rooms/:room_id/messages', authenticate, asyncHandler(async (req, res) => {
-  const room = await chatRepo.findRoomById(req.params.room_id);
-
-  if (!room) {
-    return res.status(404).json({ message: 'Room not found', code: 'NOT_FOUND' });
-  }
-
-  const canAccess =
-    req.user.role === 'ADMIN' ||
-    (req.user.role === 'PATIENT' && room.patient_id === req.user.id) ||
-    (req.user.role === 'PROVIDER' && room.provider_id === req.user.id);
-
-  if (!canAccess) {
-    return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
-  }
-
-  const messages = await chatRepo.getMessages(room.id, {
-    limit: req.query.limit || 50,
-    before: req.query.before || null,
-  });
-  await chatRepo.markAsRead(room.id, req.user.id);
-
-  return res.json({ data: messages });
 }));
 
 router.use('/', reportRoutes);
