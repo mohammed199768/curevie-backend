@@ -2,10 +2,11 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const axios = require('axios');
+const { PDFDocument } = require('pdf-lib');
 const pool = require('../../config/db');
 const { logger } = require('../logger');
 const { generateSignedUrl, isBunnyConfigured } = require('../bunny');
-const { resolveLocalPdfPath } = require('./attachments');
+const { appendAttachedProviderPdfs, resolveLocalPdfPath } = require('./attachments');
 const { addWatermark } = require('./conversion');
 const { renderPdfFromHtml, fileToDataUri } = require('./html-renderer');
 const { readStoredPdfBuffer, storeGeneratedPdf } = require('./storage');
@@ -158,38 +159,84 @@ function buildInfoRow(label, value, direction = 'rtl') {
   `;
 }
 
-function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSections, logoDataUri }) {
+function buildCaseReportHtml({
+  caseRecord,
+  patient,
+  serviceNames,
+  providerSections,
+  logoDataUri,
+  mergedPdfAttachmentCount = 0,
+}) {
   const shortCaseId = String(caseRecord.id || '').slice(0, 8).toUpperCase() || '-';
   const closedAt = formatDate(caseRecord.closed_at);
   const generatedAt = formatDateTime(new Date());
-  const serviceSummary = serviceNames.length ? serviceNames.join(' - ') : 'No case services available';
+  const serviceSummary = serviceNames.length ? serviceNames.join(' / ') : 'No case services available';
 
   return `<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <title>Curvie Case Report</title>
+  <title>Curevie Case Report</title>
   <style>
+    :root {
+      --brand-primary: #104d49;
+      --brand-secondary: #304a43;
+      --brand-accent: #86ab62;
+      --brand-olive: #5a7a50;
+      --brand-stone: #9c9fa2;
+      --surface-base: #f5f8f6;
+      --surface-soft: #f2f6f4;
+      --surface-panel: rgba(255, 255, 255, 0.92);
+      --text-strong: #19332f;
+      --text-muted: #5e726d;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       padding: 0;
-      background: #f8fafc;
-      color: #1f2937;
-      font-family: Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(134, 171, 98, 0.18), transparent 28%),
+        radial-gradient(circle at 82% 18%, rgba(16, 77, 73, 0.22), transparent 24%),
+        linear-gradient(180deg, var(--surface-base) 0%, var(--surface-soft) 42%, #fbfcfa 100%);
+      color: var(--text-strong);
+      font-family: Tahoma, Arial, sans-serif;
       line-height: 1.6;
     }
     .page {
       width: 100%;
     }
     .hero {
-      background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-      border: 1px solid #bfdbfe;
-      border-radius: 18px;
-      padding: 24px 28px;
-      margin-bottom: 20px;
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(145deg, rgba(16, 77, 73, 0.98) 0%, rgba(48, 74, 67, 0.98) 58%, rgba(13, 53, 50, 0.98) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 24px;
+      padding: 26px 28px;
+      margin-bottom: 22px;
+      color: #ffffff;
+      box-shadow: 0 34px 120px -56px rgba(15, 79, 72, 0.5);
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 14% 18%, rgba(134, 171, 98, 0.22), transparent 30%),
+        radial-gradient(circle at 86% 0%, rgba(255, 255, 255, 0.12), transparent 22%);
+      pointer-events: none;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset-inline: 0;
+      top: 0;
+      height: 5px;
+      background: linear-gradient(90deg, var(--brand-accent) 0%, #bdd49f 48%, rgba(255, 255, 255, 0.76) 100%);
+      opacity: 0.95;
     }
     .hero-top {
+      position: relative;
+      z-index: 1;
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
@@ -209,7 +256,7 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
     .brand-name {
       font-size: 13px;
       font-weight: 700;
-      color: #2563eb;
+      color: rgba(255, 255, 255, 0.76);
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
@@ -220,13 +267,32 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
     }
     .hero-title {
       margin: 0 0 6px;
-      font-size: 28px;
-      color: #1d4ed8;
+      font-size: 30px;
+      line-height: 1.15;
+      color: #ffffff;
     }
     .hero-subtitle {
       margin: 0;
       font-size: 14px;
-      color: #334155;
+      color: rgba(231, 241, 238, 0.92);
+    }
+    .hero-pills {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 18px;
+    }
+    .hero-pill {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.09);
+      color: #eef5f2;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 700;
     }
     .meta-grid {
       display: grid;
@@ -235,16 +301,16 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
       margin-top: 20px;
     }
     .card {
-      background: #ffffff;
-      border: 1px solid #e2e8f0;
-      border-radius: 16px;
+      background: var(--surface-panel);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 18px;
       padding: 18px;
-      box-shadow: 0 12px 32px rgba(37, 99, 235, 0.08);
+      box-shadow: 0 22px 56px -44px rgba(6, 32, 30, 0.72);
     }
     .card-title {
       margin: 0 0 12px;
       font-size: 16px;
-      color: #2563eb;
+      color: var(--brand-primary);
       font-weight: 700;
     }
     .info-row {
@@ -253,21 +319,21 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
       justify-content: space-between;
       gap: 12px;
       padding: 7px 0;
-      border-bottom: 1px solid #e5e7eb;
+      border-bottom: 1px solid rgba(16, 77, 73, 0.08);
     }
     .info-row:last-child {
       border-bottom: none;
       padding-bottom: 0;
     }
     .info-label {
-      color: #475569;
+      color: var(--brand-stone);
       font-size: 13px;
       font-weight: 700;
       min-width: 120px;
     }
     .info-value {
       flex: 1;
-      color: #111827;
+      color: var(--text-strong);
       font-size: 13px;
     }
     .rtl {
@@ -279,35 +345,46 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
       text-align: left;
     }
     .section {
-      background: #ffffff;
-      border: 1px solid #dbeafe;
-      border-radius: 18px;
+      position: relative;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid rgba(16, 77, 73, 0.08);
+      border-radius: 22px;
       padding: 18px;
       margin-bottom: 18px;
+      box-shadow: 0 28px 80px -58px rgba(16, 77, 73, 0.28);
       page-break-inside: avoid;
       break-inside: avoid;
     }
+    .section::before {
+      content: "";
+      position: absolute;
+      inset-inline: 0;
+      top: 0;
+      height: 3px;
+      background: linear-gradient(90deg, rgba(16, 77, 73, 0.18) 0%, rgba(134, 171, 98, 0.82) 52%, rgba(156, 159, 162, 0.4) 100%);
+    }
     .section-header {
-      border-right: 4px solid #2563eb;
+      border-right: 4px solid var(--brand-accent);
       padding-right: 12px;
       margin-bottom: 12px;
     }
     .section-title {
       margin: 0 0 4px;
       font-size: 18px;
-      color: #1d4ed8;
+      color: var(--brand-primary);
     }
     .section-meta {
       margin: 0;
-      color: #64748b;
+      color: var(--text-muted);
       font-size: 13px;
     }
     .image-frame {
       margin-top: 14px;
-      border: 1px solid #e2e8f0;
+      border: 1px solid rgba(16, 77, 73, 0.08);
       border-radius: 14px;
       padding: 14px;
-      background: #f8fafc;
+      background: linear-gradient(180deg, rgba(242, 246, 244, 0.98) 0%, rgba(255, 255, 255, 0.98) 100%);
       text-align: center;
     }
     .image-frame img {
@@ -319,16 +396,21 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
     }
     .placeholder {
       margin-top: 12px;
-      background: #eff6ff;
-      border: 1px dashed #93c5fd;
+      background: linear-gradient(180deg, rgba(134, 171, 98, 0.12) 0%, rgba(255, 255, 255, 0.96) 100%);
+      border: 1px dashed rgba(90, 122, 80, 0.45);
       border-radius: 12px;
-      padding: 16px;
-      color: #1e40af;
+      padding: 16px 18px;
+      color: var(--brand-primary);
       font-size: 14px;
+    }
+    .placeholder strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--brand-secondary);
     }
     .footer {
       margin-top: 10px;
-      color: #64748b;
+      color: #70827d;
       font-size: 12px;
       text-align: center;
     }
@@ -347,13 +429,19 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
     <section class="hero">
       <div class="hero-top">
         <div class="brand-block">
-          ${logoDataUri ? `<img class="brand-logo" src="${logoDataUri}" alt="Curvie logo" />` : ''}
-          <div class="brand-name">Curvie Clinical Report</div>
+          ${logoDataUri ? `<img class="brand-logo" src="${logoDataUri}" alt="Curevie logo" />` : ''}
+          <div class="brand-name">Curevie Clinical Report</div>
         </div>
         <div class="hero-copy">
           <h1 class="hero-title">التقرير الطبي للحالة</h1>
           <p class="hero-subtitle">ملف مجمع للحالة المغلقة يشمل مرفقات مقدمي الخدمة والصور الطبية.</p>
         </div>
+      </div>
+
+      <div class="hero-pills">
+        <div class="hero-pill">الخدمات: ${escapeHtml(String(serviceNames.length || 0))}</div>
+        <div class="hero-pill">ملفات PDF المدمجة: ${escapeHtml(String(mergedPdfAttachmentCount || 0))}</div>
+        <div class="hero-pill">الحالة: ${escapeHtml(formatDisplayValue(caseRecord.status))}</div>
       </div>
 
       <div class="meta-grid">
@@ -386,7 +474,7 @@ function buildCaseReportHtml({ caseRecord, patient, serviceNames, providerSectio
       </section>
     `}
 
-    <div class="footer">Curvie Medical Records</div>
+    <div class="footer">Curevie Medical Records</div>
   </div>
 </body>
 </html>`;
@@ -443,6 +531,9 @@ async function generateCaseReportPdf(caseId) {
         : providerFilesResult.rows.map((fileRecord) => formatDisplayValue(fileRecord.service_name))
     ).filter(Boolean)
   ));
+  const pdfProviderFiles = providerFilesResult.rows.filter(
+    (fileRecord) => String(fileRecord.file_type || '').toUpperCase() === 'PDF'
+  );
   const logoDataUri = await fileToDataUri(LOGO_PATH);
 
   const renderedSections = [];
@@ -451,14 +542,6 @@ async function generateCaseReportPdf(caseId) {
     const providerName = formatDisplayValue(fileRecord.provider_name, 'Provider');
 
     if (String(fileRecord.file_type || '').toUpperCase() === 'PDF') {
-      logger.warn('Case report generator skipped PDF embedding because Puppeteer cannot inline PDFs', {
-        caseId,
-        fileId: fileRecord.id,
-        serviceName,
-        providerName,
-        fileUrl: fileRecord.file_url,
-      });
-
       renderedSections.push(`
         <section class="section">
           <div class="section-header">
@@ -515,16 +598,33 @@ async function generateCaseReportPdf(caseId) {
     serviceNames,
     providerSections: renderedSections.join('\n'),
     logoDataUri,
+    mergedPdfAttachmentCount: pdfProviderFiles.length,
   });
 
-  const pdfBuffer = await renderPdfFromHtml(html, {
+  const basePdfBuffer = await renderPdfFromHtml(html, {
     marginTop: '20mm',
     marginBottom: '20mm',
     marginLeft: '15mm',
     marginRight: '15mm',
   });
 
-  const storedUrl = await storeGeneratedPdf(pdfBuffer, `case-report-${caseId}.pdf`, 'case-reports');
+  let finalPdfBuffer = Buffer.isBuffer(basePdfBuffer) ? basePdfBuffer : Buffer.from(basePdfBuffer);
+
+  if (pdfProviderFiles.length) {
+    const pdfDoc = await PDFDocument.load(finalPdfBuffer, { ignoreEncryption: true });
+    await appendAttachedProviderPdfs(
+      pdfDoc,
+      pdfProviderFiles.map((fileRecord) => ({
+        ...fileRecord,
+        request_id: caseId,
+        provider_id: fileRecord.uploaded_by || null,
+        pdf_report_url: fileRecord.file_url,
+      }))
+    );
+    finalPdfBuffer = Buffer.from(await pdfDoc.save());
+  }
+
+  const storedUrl = await storeGeneratedPdf(finalPdfBuffer, `case-report-${caseId}.pdf`, 'case-reports');
   if (!storedUrl) {
     throw new Error('CASE_REPORT_STORE_FAILED');
   }
