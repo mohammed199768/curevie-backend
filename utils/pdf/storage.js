@@ -29,12 +29,18 @@ function publicPdfUrlFromAbsolutePath(filePath) {
 }
 
 async function storeGeneratedPdf(buffer, fileName, folder = '') {
-  if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) {
+  const normalizedBuffer = Buffer.isBuffer(buffer)
+    ? buffer
+    : (buffer instanceof Uint8Array || buffer instanceof ArrayBuffer)
+      ? Buffer.from(buffer)
+      : null;
+
+  if (!normalizedBuffer || !normalizedBuffer.length) {
     return null;
   }
 
   if (isBunnyConfigured()) {
-    return uploadToBunny(buffer, fileName, folder);
+    return uploadToBunny(normalizedBuffer, fileName, folder);
   }
 
   const safeFolder = sanitizePathPart(folder);
@@ -47,7 +53,7 @@ async function storeGeneratedPdf(buffer, fileName, folder = '') {
   const storedName = `${Date.now()}-${randomUUID()}-${safeName}`;
   const storedPath = path.join(targetDir, storedName);
 
-  await fsPromises.writeFile(storedPath, buffer);
+  await fsPromises.writeFile(storedPath, normalizedBuffer);
   return publicPdfUrlFromAbsolutePath(storedPath);
 }
 

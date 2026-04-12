@@ -100,7 +100,7 @@ async function renderPdfFromHtml(html, options = {}) {
       timeout: options.timeout || 120000,
     });
 
-    return pdfBuffer;
+    return Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer);
   } finally {
     await browser.close();
   }
