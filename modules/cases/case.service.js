@@ -397,6 +397,9 @@ class CaseService {
         invoice_data: invoice,
         package_data: packageData,
       }, client);
+      if (!snapshot) {
+        throw new AppError('Case snapshot is locked and cannot be modified', 409, 'CASE_SNAPSHOT_LOCKED');
+      }
       logger.info('CLOSE_STEP_6_SNAPSHOT', { snapshotId: snapshot?.id });
 
       await client.query(
@@ -428,6 +431,13 @@ class CaseService {
       };
     } catch (error) {
       await client.query('ROLLBACK');
+      logger.error('CLOSE_CASE_ERROR', {
+        caseId,
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+        stack: error.stack?.split('\n')[0]
+      });
       throw error;
     } finally {
       client.release();

@@ -301,12 +301,21 @@ class CaseRepository extends BaseRepository {
   }
 
   async createSnapshot(data, client = null) {
+    const values = [
+      data.case_id,
+      data.patient_data ? JSON.stringify(data.patient_data) : null,
+      data.services_data ? JSON.stringify(data.services_data) : null,
+      data.providers_data ? JSON.stringify(data.providers_data) : null,
+      data.invoice_data ? JSON.stringify(data.invoice_data) : null,
+      data.package_data ? JSON.stringify(data.package_data) : null,
+    ];
+
     return this._queryOne(
       `
       INSERT INTO case_snapshots
         (case_id, patient_data, services_data, providers_data,
          invoice_data, package_data, is_locked, locked_at)
-      VALUES ($1, $2, $3, $4, $5, $6, TRUE, NOW())
+      VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, TRUE, NOW())
       ON CONFLICT (case_id) DO UPDATE SET
         patient_data = EXCLUDED.patient_data,
         services_data = EXCLUDED.services_data,
@@ -315,17 +324,13 @@ class CaseRepository extends BaseRepository {
         package_data = EXCLUDED.package_data,
         is_locked = TRUE,
         locked_at = NOW(),
-        updated_at = NOW()
+        updated_at = NOW(),
+        unlocked_by = NULL,
+        unlock_reason = NULL
+      WHERE case_snapshots.is_locked = FALSE
       RETURNING *
       `,
-      [
-        data.case_id,
-        data.patient_data || null,
-        data.services_data || null,
-        data.providers_data || null,
-        data.invoice_data || null,
-        data.package_data || null,
-      ],
+      values,
       client
     );
   }
