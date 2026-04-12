@@ -118,7 +118,19 @@ router.post('/:id/report/generate', authenticate, adminOnly, asyncHandler(async 
 
   await ensureMedicalReportRecord(id);
 
-  const pdfUrl = await generateCaseReportPdf(id);
+  let pdfUrl = null;
+  try {
+    pdfUrl = await generateCaseReportPdf(id);
+  } catch (error) {
+    logger.error('CASE_REPORT_GENERATION_FAILED', {
+      caseId: id,
+      adminId: req.user.id,
+      message: error.message,
+      stack: error.stack?.split('\n')[0],
+    });
+    return res.status(500).json({ message: 'Failed to generate report PDF', code: 'PDF_GENERATION_FAILED' });
+  }
+
   if (!pdfUrl) {
     logger.warn('Case report generation returned an empty URL', { caseId: id, adminId: req.user.id });
     return res.status(500).json({ message: 'Failed to generate report PDF', code: 'PDF_GENERATION_FAILED' });

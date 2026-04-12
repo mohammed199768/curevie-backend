@@ -1,3 +1,4 @@
+const fs = require('fs');
 const fsPromises = require('fs/promises');
 const path = require('path');
 
@@ -28,18 +29,40 @@ async function fileToDataUri(filePath) {
   }
 }
 
+function resolveChromiumExecutablePath() {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROMIUM_PATH,
+    process.env.CHROME_BIN,
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
 async function renderPdfFromHtml(html, options = {}) {
   const puppeteer = require('puppeteer');
-  const browser = await puppeteer.launch({
+  const executablePath = resolveChromiumExecutablePath();
+  const launchOptions = {
     headless: 'new',
-    executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
     ],
-  });
+  };
+
+  if (executablePath) {
+    launchOptions.executablePath = executablePath;
+  }
+
+  const browser = await puppeteer.launch(launchOptions);
 
   try {
     const page = await browser.newPage();
