@@ -24,11 +24,42 @@ const {
 const reportRepository = new ReportRepository(pool); // AUDIT-FIX: P3-STEP8-DIP - report routes own the concrete repository instance.
 reportService.configureReportService(reportRepository); // AUDIT-FIX: P3-STEP8-DIP - route-level composition now wires the backward-compatible report service singleton explicitly.
 const reportController = reportControllerModule.createReportController({ reportRepository }); // AUDIT-FIX: P3-STEP8-DIP - report routes inject the configured repository into the controller.
+const CASE_RADIOLOGY_MATCHER = `(
+  LOWER(COALESCE(s.name, '')) ~ '(xray|x-ray|radiology|scan|اشعة|أشعة)'
+  OR LOWER(COALESCE(sc.name, '')) ~ '(xray|x-ray|radiology|scan|اشعة|أشعة)'
+)`;
 
 function toEndOfDay(value) {
   const date = new Date(value);
   date.setHours(23, 59, 59, 999);
   return date;
+}
+
+function resolveFinancialDateRange(query = {}) {
+  const { period = 'monthly', from, to, year, month } = query;
+  const now = new Date();
+  let dateFrom;
+  let dateTo;
+
+  if (from || to) {
+    dateFrom = from ? new Date(from) : new Date('2000-01-01');
+    dateTo = to ? toEndOfDay(to) : new Date();
+  } else if (period === 'daily') {
+    dateFrom = new Date(now);
+    dateFrom.setHours(0, 0, 0, 0);
+    dateTo = new Date();
+  } else if (period === 'monthly') {
+    const parsedMonth = month ? parseInt(month, 10) - 1 : now.getMonth();
+    const parsedYear = year ? parseInt(year, 10) : now.getFullYear();
+    dateFrom = new Date(parsedYear, parsedMonth, 1);
+    dateTo = new Date(parsedYear, parsedMonth + 1, 0, 23, 59, 59, 999);
+  } else {
+    const parsedYear = year ? parseInt(year, 10) : now.getFullYear();
+    dateFrom = new Date(parsedYear, 0, 1);
+    dateTo = new Date(parsedYear, 11, 31, 23, 59, 59, 999);
+  }
+
+  return { period, dateFrom, dateTo };
 }
 
 // Multer لقبول أي ملف
@@ -42,28 +73,167 @@ const anyUpload = multer({
 // GET /api/reports/financial
 // تقرير مالي شامل
 // =============================================
+router.get('/cases/financial', authenticate, adminOnly, readLimiter, asyncHandler(async (req, res) => {
+  const { period, dateFrom, dateTo } = resolveFinancialDateRange(req.query);
+
+  const summaryQuery = pool.query(`
+    SELECT
+      COUNT(*)::int AS total_invoices,
+      COUNT(*) FILTER (WHERE ci.payment_status = 'PAID')::int AS paid_invoices,
+      COUNT(*) FILTER (WHERE ci.payment_status = 'PENDING')::int AS pending_invoices,
+      COUNT(*) FILTER (WHERE ci.payment_status = 'CANCELLED')::int AS cancelled_invoices,
+      COALESCE(SUM(ci.original_amount), 0) AS gross_revenue,
+      COALESCE(SUM(ci.final_amount), 0) AS net_revenue,
+      COALESCE(SUM(ci.total_paid), 0) AS collected_revenue,
+      COALESCE(SUM(ci.remaining_amount), 0) AS pending_revenue,
+      COALESCE(SUM(GREATEST(ci.original_amount - ci.final_amount, 0)), 0) AS total_coupon_discounts,
+      0::numeric AS total_points_discounts,
+      COALESCE(SUM(ci.total_paid), 0) AS total_collected
+    FROM case_invoices ci
+    JOIN cases c ON c.id = ci.case_id
+    WHERE c.created_at BETWEEN $1 AND $2
+  `, [dateFrom, dateTo]);
+
+  const casesQuery = pool.query(`
+    SELECT
+      COUNT(*)::int AS total_cases,
+      COUNT(*) FILTER (WHERE c.status IN ('COMPLETED', 'CLOSED'))::int AS completed,
+      COUNT(*) FILTER (WHERE c.status = 'PENDING')::int AS pending,
+      COUNT(*) FILTER (WHERE c.status = 'CANCELLED')::int AS cancelled,
+      COUNT(*) FILTER (WHERE c.status = 'IN_PROGRESS')::int AS in_progress,
+      COUNT(*) FILTER (WHERE c.status = 'CLOSED')::int AS closed,
+      COUNT(*) FILTER (WHERE c.patient_id IS NULL)::int AS guest_cases,
+      COUNT(*) FILTER (WHERE c.patient_id IS NOT NULL)::int AS patient_cases,
+      COUNT(*) FILTER (WHERE COALESCE(service_flags.has_medical, FALSE))::int AS medical_count,
+      0::int AS lab_count,
+      COUNT(*) FILTER (WHERE c.package_id IS NOT NULL)::int AS package_count,
+      COUNT(*) FILTER (WHERE COALESCE(service_flags.has_radiology, FALSE))::int AS xray_count,
+      COUNT(*) FILTER (WHERE COALESCE(service_flags.has_nursing, FALSE))::int AS nursing_count
+    FROM cases c
+    LEFT JOIN LATERAL (
+      SELECT
+        BOOL_OR(NOT ${CASE_RADIOLOGY_MATCHER}) AS has_medical,
+        BOOL_OR(${CASE_RADIOLOGY_MATCHER}) AS has_radiology,
+        FALSE AS has_nursing
+      FROM case_services cs
+      LEFT JOIN services s ON s.id = cs.service_id
+      LEFT JOIN service_categories sc ON sc.id = s.category_id
+      WHERE cs.case_id = c.id
+    ) service_flags ON TRUE
+    WHERE c.created_at BETWEEN $1 AND $2
+  `, [dateFrom, dateTo]);
+
+  const paymentMethodsQuery = pool.query(`
+    SELECT
+      ci.payment_method,
+      COUNT(*)::int AS count,
+      COALESCE(SUM(ci.total_paid), 0) AS total
+    FROM case_invoices ci
+    JOIN cases c ON c.id = ci.case_id
+    WHERE c.created_at BETWEEN $1 AND $2
+      AND ci.payment_status = 'PAID'
+      AND ci.payment_method IS NOT NULL
+    GROUP BY ci.payment_method
+    ORDER BY total DESC
+  `, [dateFrom, dateTo]);
+
+  const topServicesQuery = pool.query(`
+    SELECT
+      COALESCE(s.name, pkg.name, 'General case') AS service_name,
+      CASE
+        WHEN c.package_id IS NOT NULL AND cs.id IS NULL THEN 'PACKAGE'
+        WHEN ${CASE_RADIOLOGY_MATCHER} THEN 'RADIOLOGY'
+        ELSE 'MEDICAL'
+      END AS service_type,
+      COUNT(*)::int AS count,
+      COALESCE(SUM(COALESCE(cs.bundle_price, ci.final_amount, ci.original_amount, 0)), 0) AS revenue
+    FROM cases c
+    LEFT JOIN case_invoices ci ON ci.case_id = c.id
+    LEFT JOIN case_services cs ON cs.case_id = c.id
+    LEFT JOIN services s ON s.id = cs.service_id
+    LEFT JOIN service_categories sc ON sc.id = s.category_id
+    LEFT JOIN packages pkg ON pkg.id = c.package_id
+    WHERE c.created_at BETWEEN $1 AND $2
+      AND (cs.id IS NOT NULL OR c.package_id IS NOT NULL)
+    GROUP BY service_name, service_type
+    ORDER BY revenue DESC, count DESC
+    LIMIT 10
+  `, [dateFrom, dateTo]);
+
+  const dailyBreakdownQuery = pool.query(`
+    SELECT
+      DATE(c.created_at) AS date,
+      COUNT(ci.id)::int AS invoices,
+      COALESCE(SUM(ci.final_amount), 0) AS revenue,
+      COALESCE(SUM(ci.total_paid), 0) AS collected
+    FROM cases c
+    LEFT JOIN case_invoices ci ON ci.case_id = c.id
+    WHERE c.created_at BETWEEN $1 AND $2
+    GROUP BY DATE(c.created_at)
+    ORDER BY date ASC
+  `, [dateFrom, dateTo]);
+
+  const caseRegisterQuery = pool.query(`
+    SELECT
+      c.id AS case_id,
+      ci.id AS invoice_id,
+      COALESCE(cs.provider_id, c.lead_provider_id) AS provider_id,
+      COALESCE(sp.full_name, lead_sp.full_name, 'Unassigned provider') AS provider_name,
+      COALESCE(p.full_name, c.guest_name, 'Unknown') AS patient_name,
+      COALESCE(s.name, pkg.name, 'General case') AS service_name,
+      CASE
+        WHEN c.package_id IS NOT NULL AND cs.id IS NULL THEN 'PACKAGE'
+        WHEN ${CASE_RADIOLOGY_MATCHER} THEN 'RADIOLOGY'
+        ELSE 'MEDICAL'
+      END AS service_type,
+      COALESCE(cs.bundle_price, ci.final_amount, ci.original_amount, 0) AS amount,
+      COALESCE(ci.payment_status, 'PENDING') AS payment_status,
+      c.status::text AS case_status,
+      c.created_at,
+      ci.approved_at AS paid_at
+    FROM cases c
+    LEFT JOIN patients p ON p.id = c.patient_id
+    LEFT JOIN case_invoices ci ON ci.case_id = c.id
+    LEFT JOIN case_services cs ON cs.case_id = c.id
+    LEFT JOIN services s ON s.id = cs.service_id
+    LEFT JOIN service_categories sc ON sc.id = s.category_id
+    LEFT JOIN packages pkg ON pkg.id = c.package_id
+    LEFT JOIN service_providers sp ON sp.id = cs.provider_id
+    LEFT JOIN service_providers lead_sp ON lead_sp.id = c.lead_provider_id
+    WHERE c.created_at BETWEEN $1 AND $2
+      AND (cs.id IS NOT NULL OR c.package_id IS NOT NULL)
+    ORDER BY c.created_at DESC, COALESCE(cs.created_at, c.created_at) DESC
+  `, [dateFrom, dateTo]);
+
+  const [
+    summaryResult,
+    casesResult,
+    paymentMethodsResult,
+    topServicesResult,
+    dailyBreakdownResult,
+    caseRegisterResult,
+  ] = await Promise.all([
+    summaryQuery,
+    casesQuery,
+    paymentMethodsQuery,
+    topServicesQuery,
+    dailyBreakdownQuery,
+    caseRegisterQuery,
+  ]);
+
+  res.json({
+    period: { type: period, from: dateFrom, to: dateTo },
+    summary: summaryResult.rows[0],
+    cases: casesResult.rows[0],
+    payment_methods: paymentMethodsResult.rows,
+    top_services: topServicesResult.rows,
+    daily_breakdown: dailyBreakdownResult.rows,
+    case_register: caseRegisterResult.rows,
+  });
+}));
+
 router.get('/financial', authenticate, adminOnly, readLimiter, asyncHandler(async (req, res) => {
-  const { period = 'monthly', from, to, year, month } = req.query;
-
-  let dateFrom, dateTo;
-  const now = new Date();
-
-  if (from || to) {
-    dateFrom = from ? new Date(from) : new Date('2000-01-01');
-    dateTo   = to ? toEndOfDay(to) : new Date();
-  } else if (period === 'daily') {
-    dateFrom = new Date(now.setHours(0, 0, 0, 0));
-    dateTo   = new Date();
-  } else if (period === 'monthly') {
-    const m = month ? parseInt(month) - 1 : now.getMonth();
-    const y = year ? parseInt(year) : now.getFullYear();
-    dateFrom = new Date(y, m, 1);
-    dateTo   = new Date(y, m + 1, 0, 23, 59, 59);
-  } else if (period === 'yearly') {
-    const y = year ? parseInt(year) : now.getFullYear();
-    dateFrom = new Date(y, 0, 1);
-    dateTo   = new Date(y, 11, 31, 23, 59, 59);
-  }
+  const { period, dateFrom, dateTo } = resolveFinancialDateRange(req.query);
 
   // إجماليات الفواتير
   const totalsQuery = pool.query(`

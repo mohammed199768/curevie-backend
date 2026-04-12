@@ -11,35 +11,113 @@ async function listCombinedPatients(req, res) {
 
   const pool = require('../../config/db');
 
-  const dataPatientSearchSql = search
-    ? 'WHERE (p.full_name ILIKE $3 OR p.phone ILIKE $3)'
-    : '';
-  const countPatientSearchSql = search
-    ? 'WHERE (p.full_name ILIKE $1 OR p.phone ILIKE $1)'
-    : '';
+  const contactsCte = `
+    WITH patient_rows AS (
+      SELECT
+        p.id::text AS id,
+        p.full_name AS name,
+        p.email AS email,
+        p.phone AS phone,
+        p.gender AS gender,
+        p.address AS address,
+        p.total_points AS total_points,
+        'PATIENT'::text AS record_type,
+        p.created_at AS created_at
+      FROM patients p
+    ),
+    guest_sources AS (
+      SELECT
+        c.guest_name AS name,
+        c.guest_phone AS phone,
+        c.guest_address AS address,
+        c.created_at AS created_at
+      FROM cases c
+      WHERE c.patient_id IS NULL
+        AND c.guest_name IS NOT NULL
+        AND c.guest_phone IS NOT NULL
 
-  const params = search ? [limit, offset, search] : [limit, offset];
+      UNION ALL
+
+      SELECT
+        sr.guest_name AS name,
+        sr.guest_phone AS phone,
+        sr.guest_address AS address,
+        sr.created_at AS created_at
+      FROM service_requests sr
+      WHERE sr.patient_id IS NULL
+        AND sr.guest_name IS NOT NULL
+        AND sr.guest_phone IS NOT NULL
+    ),
+    guest_rows AS (
+      SELECT
+        md5(lower(COALESCE(phone, '')) || '|' || lower(COALESCE(name, ''))) AS id,
+        name,
+        NULL::text AS email,
+        phone,
+        NULL::text AS gender,
+        (ARRAY_REMOVE(ARRAY_AGG(address ORDER BY created_at DESC), NULL))[1] AS address,
+        0::int AS total_points,
+        'GUEST'::text AS record_type,
+        MAX(created_at) AS created_at
+      FROM guest_sources
+      GROUP BY name, phone
+    ),
+    contacts AS (
+      SELECT * FROM patient_rows
+      UNION ALL
+      SELECT g.*
+      FROM guest_rows g
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM patients p
+        WHERE p.phone IS NOT NULL
+          AND p.phone = g.phone
+      )
+    )
+  `;
+
+  const searchWhere = `
+    WHERE ($3::text IS NULL
+      OR c.name ILIKE $3
+      OR COALESCE(c.email, '') ILIKE $3
+      OR COALESCE(c.phone, '') ILIKE $3
+      OR COALESCE(c.address, '') ILIKE $3)
+  `;
+  const countSearchWhere = `
+    WHERE ($1::text IS NULL
+      OR c.name ILIKE $1
+      OR COALESCE(c.email, '') ILIKE $1
+      OR COALESCE(c.phone, '') ILIKE $1
+      OR COALESCE(c.address, '') ILIKE $1)
+  `;
+
+  const params = [limit, offset, search];
 
   const query = `
+    ${contactsCte}
     SELECT
-      p.id::text   AS id,
-      p.full_name  AS name,
-      p.phone      AS phone,
-      'PATIENT'    AS record_type,
-      p.created_at AS created_at
-    FROM patients p
-    ${dataPatientSearchSql}
-    ORDER BY created_at DESC
+      c.id,
+      c.name,
+      c.email,
+      c.phone,
+      c.gender,
+      c.address,
+      c.total_points,
+      c.record_type,
+      c.created_at
+    FROM contacts c
+    ${searchWhere}
+    ORDER BY c.created_at DESC
     LIMIT $1 OFFSET $2
   `;
 
   const countQuery = `
+    ${contactsCte}
     SELECT COUNT(*)::int AS total
-    FROM patients p
-    ${countPatientSearchSql}
+    FROM contacts c
+    ${countSearchWhere}
   `;
-
-  const countParams = search ? [search] : [];
+  const countParams = [search];
 
   const [dataResult, countResult] = await Promise.all([
     pool.query(query, params),
