@@ -159,10 +159,21 @@ class CaseRepository extends BaseRepository {
         cs.*,
         s.name AS service_name,
         s.description AS service_description,
+        c.name AS service_category_name,
+        CASE
+          WHEN LOWER(COALESCE(s.name, '')) ~ '(lab|laboratory|test|تحاليل|تحليل|مختبر|فحص)'
+            OR LOWER(COALESCE(c.name, '')) ~ '(lab|laboratory|test|تحاليل|تحليل|مختبر|فحص)'
+            THEN 'LAB'
+          WHEN LOWER(COALESCE(s.name, '')) ~ '(xray|x-ray|radiology|scan|mri|ct|ultrasound|sonar|اشعة|أشعة|تصوير)'
+            OR LOWER(COALESCE(c.name, '')) ~ '(xray|x-ray|radiology|scan|mri|ct|ultrasound|sonar|اشعة|أشعة|تصوير)'
+            THEN 'RADIOLOGY'
+          ELSE 'MEDICAL'
+        END AS service_kind,
         sp.full_name AS provider_name,
         sp.type AS provider_type
       FROM case_services cs
       LEFT JOIN services s ON s.id = cs.service_id
+      LEFT JOIN service_categories c ON c.id = s.category_id
       LEFT JOIN service_providers sp ON sp.id = cs.provider_id
       WHERE cs.case_id = $1
       ORDER BY cs.created_at ASC
