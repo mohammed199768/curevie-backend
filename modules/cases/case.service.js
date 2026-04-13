@@ -1,6 +1,8 @@
 const pool = require('../../config/db');
 const { AppError } = require('../../middlewares/errorHandler');
 const CaseRepository = require('../../repositories/CaseRepository');
+const notificationService = require('../notifications/notification.service');
+const { logger } = require('../../utils/logger');
 
 class CaseService {
   constructor(pool) {
@@ -270,8 +272,35 @@ class CaseService {
 
       const updatedCase = await this.caseRepo.findCaseById(caseId, client);
       const services = await this.caseRepo.findServicesByCase(caseId, client);
+      const assignedProviderIds = [...new Set(
+        assignments
+          .map((assignment) => assignment?.provider_id)
+          .filter(Boolean)
+      )];
 
       await client.query('COMMIT');
+
+      const patientName = updatedCase?.patient_name || updatedCase?.guest_name || null;
+      const notificationResults = await Promise.allSettled(
+        assignedProviderIds.map((providerId) =>
+          notificationService.notifyCaseAssigned({
+            caseId,
+            providerId,
+            patientName,
+          })
+        )
+      );
+
+      notificationResults.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          logger.warn('CASE_ASSIGN_NOTIFICATION_FAILED', {
+            caseId,
+            providerId: assignedProviderIds[index],
+            message: result.reason?.message || 'Unknown notification error',
+          });
+        }
+      });
+
       return {
         case: updatedCase,
         services,

@@ -4,6 +4,7 @@ const NOTIF_TYPES = {
   REQUEST_ASSIGNED: 'REQUEST_ASSIGNED',
   REQUEST_COMPLETED: 'REQUEST_COMPLETED',
   REQUEST_CANCELLED: 'REQUEST_CANCELLED',
+  CASE_ASSIGNED: 'CASE_ASSIGNED',
   PAYMENT_RECEIVED: 'PAYMENT_RECEIVED',
   PAYMENT_PARTIAL: 'PAYMENT_PARTIAL',
   INVOICE_PAID: 'INVOICE_PAID',
@@ -88,6 +89,21 @@ function createNotificationService(notifRepo) {
     }
 
     await notifRepo.createMany(notifications, client);
+  }
+
+  async function notifyCaseAssigned({ caseId, providerId, patientName }, client) {
+    if (!caseId || !providerId) return;
+
+    const patientLabel = patientName ? ` for ${patientName}` : '';
+
+    await notifRepo.createNotification({
+      userId: providerId,
+      userRole: 'PROVIDER',
+      type: NOTIF_TYPES.CASE_ASSIGNED,
+      title: 'New case assigned',
+      body: `A new case${patientLabel} has been assigned to you.`,
+      data: { case_id: caseId, caseId },
+    }, client);
   }
 
   async function notifyPaymentReceived({ invoiceId, patientId, amount, remaining, method }, client) {
@@ -192,6 +208,7 @@ function createNotificationService(notifRepo) {
     createMany,
     notifyRequestCreated,
     notifyRequestStatusChanged,
+    notifyCaseAssigned,
     notifyPaymentReceived,
     notifyVipGranted,
     notifyPointsEarned,
@@ -219,6 +236,7 @@ async function createNotification(...args) { return getConfiguredNotificationSer
 async function createMany(...args) { return getConfiguredNotificationService().createMany(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level createMany method without a service-level DB import.
 async function notifyRequestCreated(...args) { return getConfiguredNotificationService().notifyRequestCreated(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level notifyRequestCreated method without a service-level DB import.
 async function notifyRequestStatusChanged(...args) { return getConfiguredNotificationService().notifyRequestStatusChanged(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level notifyRequestStatusChanged method without a service-level DB import.
+async function notifyCaseAssigned(...args) { return getConfiguredNotificationService().notifyCaseAssigned(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level notifyCaseAssigned method without a service-level DB import.
 async function notifyPaymentReceived(...args) { return getConfiguredNotificationService().notifyPaymentReceived(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level notifyPaymentReceived method without a service-level DB import.
 async function notifyVipGranted(...args) { return getConfiguredNotificationService().notifyVipGranted(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level notifyVipGranted method without a service-level DB import.
 async function notifyPointsEarned(...args) { return getConfiguredNotificationService().notifyPointsEarned(...args); } // AUDIT-FIX: P3-STEP8-COMPAT - preserve the legacy top-level notifyPointsEarned method without a service-level DB import.
@@ -236,6 +254,7 @@ module.exports = {
   createMany,
   notifyRequestCreated,
   notifyRequestStatusChanged,
+  notifyCaseAssigned,
   notifyPaymentReceived,
   notifyVipGranted,
   notifyPointsEarned,
