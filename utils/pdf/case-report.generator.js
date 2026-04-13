@@ -484,11 +484,14 @@ async function generateCaseReportPdf(caseId) {
   const caseResult = await pool.query(
     `
     SELECT c.*,
-      p.full_name AS patient_name, p.phone, p.date_of_birth,
-      p.gender, p.allergies,
+      COALESCE(p.full_name, c.guest_name) AS patient_name,
+      COALESCE(p.phone, c.guest_phone) AS patient_phone,
+      p.date_of_birth AS patient_date_of_birth,
+      p.gender AS patient_gender,
+      p.allergies AS patient_allergies,
       cs_snap.patient_data, cs_snap.services_data
     FROM cases c
-    JOIN patients p ON p.id = c.patient_id
+    LEFT JOIN patients p ON p.id = c.patient_id
     LEFT JOIN case_snapshots cs_snap ON cs_snap.case_id = c.id
     WHERE c.id = $1
     LIMIT 1
@@ -518,11 +521,11 @@ async function generateCaseReportPdf(caseId) {
   const patientSnapshot = normalizeJsonValue(caseRecord.patient_data) || {};
   const servicesSnapshot = normalizeJsonValue(caseRecord.services_data);
   const patient = {
-    full_name: patientSnapshot.full_name || caseRecord.patient_name || '-',
-    phone: patientSnapshot.phone || caseRecord.phone || '-',
-    date_of_birth: patientSnapshot.date_of_birth || caseRecord.date_of_birth || null,
-    gender: patientSnapshot.gender || caseRecord.gender || '-',
-    allergies: patientSnapshot.allergies || caseRecord.allergies || '-',
+    full_name: patientSnapshot.full_name || caseRecord.patient_name || caseRecord.guest_name || '-',
+    phone: patientSnapshot.phone || caseRecord.patient_phone || caseRecord.guest_phone || '-',
+    date_of_birth: patientSnapshot.date_of_birth || caseRecord.patient_date_of_birth || null,
+    gender: patientSnapshot.gender || caseRecord.patient_gender || '-',
+    allergies: patientSnapshot.allergies || caseRecord.patient_allergies || '-',
   };
   const serviceNames = Array.from(new Set(
     (
