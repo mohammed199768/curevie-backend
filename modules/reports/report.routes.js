@@ -232,7 +232,132 @@ router.get('/cases/financial', authenticate, adminOnly, readLimiter, asyncHandle
   });
 }));
 
+async function buildLegacyFinancialReport(query = {}) {
+  const { period, dateFrom, dateTo } = resolveFinancialDateRange(query);
+
+  const summaryQuery = pool.query(`
+    SELECT
+      COUNT(*)::int AS total_invoices,
+      COUNT(*) FILTER (WHERE ci.payment_status = 'PAID')::int AS paid_invoices,
+      COUNT(*) FILTER (WHERE ci.payment_status = 'PENDING')::int AS pending_invoices,
+      COUNT(*) FILTER (WHERE ci.payment_status = 'CANCELLED')::int AS cancelled_invoices,
+      COALESCE(SUM(ci.original_amount), 0) AS gross_revenue,
+      COALESCE(SUM(ci.final_amount), 0) AS net_revenue,
+      COALESCE(SUM(ci.total_paid), 0) AS collected_revenue,
+      COALESCE(SUM(ci.remaining_amount), 0) AS pending_revenue,
+      COALESCE(SUM(GREATEST(ci.original_amount - ci.final_amount, 0)), 0) AS total_coupon_discounts,
+      0::numeric AS total_points_discounts,
+      COALESCE(SUM(ci.total_paid), 0) AS total_collected
+    FROM case_invoices ci
+    JOIN cases c ON c.id = ci.case_id
+    WHERE c.created_at BETWEEN $1 AND $2
+  `, [dateFrom, dateTo]);
+
+  const requestsQuery = pool.query(`
+    SELECT
+      COUNT(*)::int AS total_requests,
+      COUNT(*) FILTER (WHERE c.status IN ('COMPLETED', 'CLOSED'))::int AS completed,
+      COUNT(*) FILTER (WHERE c.status = 'PENDING')::int AS pending,
+      COUNT(*) FILTER (WHERE c.status = 'CANCELLED')::int AS cancelled,
+      COUNT(*) FILTER (WHERE c.patient_id IS NULL)::int AS guest_requests,
+      COUNT(*) FILTER (WHERE c.patient_id IS NOT NULL)::int AS patient_requests,
+      COUNT(*) FILTER (WHERE COALESCE(service_flags.has_medical, FALSE))::int AS medical_count,
+      0::int AS lab_count,
+      COUNT(*) FILTER (WHERE c.package_id IS NOT NULL)::int AS package_count,
+      COUNT(*) FILTER (WHERE COALESCE(service_flags.has_radiology, FALSE))::int AS xray_count
+    FROM cases c
+    LEFT JOIN LATERAL (
+      SELECT
+        BOOL_OR(NOT ${CASE_RADIOLOGY_MATCHER}) AS has_medical,
+        BOOL_OR(${CASE_RADIOLOGY_MATCHER}) AS has_radiology
+      FROM case_services cs
+      LEFT JOIN services s ON s.id = cs.service_id
+      LEFT JOIN service_categories sc ON sc.id = s.category_id
+      WHERE cs.case_id = c.id
+    ) service_flags ON TRUE
+    WHERE c.created_at BETWEEN $1 AND $2
+  `, [dateFrom, dateTo]);
+
+  const paymentMethodsQuery = pool.query(`
+    SELECT
+      ci.payment_method,
+      COUNT(*)::int AS count,
+      COALESCE(SUM(ci.total_paid), 0) AS total
+    FROM case_invoices ci
+    JOIN cases c ON c.id = ci.case_id
+    WHERE c.created_at BETWEEN $1 AND $2
+      AND ci.payment_status = 'PAID'
+      AND ci.payment_method IS NOT NULL
+    GROUP BY ci.payment_method
+    ORDER BY total DESC
+  `, [dateFrom, dateTo]);
+
+  const topServicesQuery = pool.query(`
+    SELECT
+      COALESCE(s.name, pkg.name, 'General case') AS service_name,
+      CASE
+        WHEN c.package_id IS NOT NULL AND cs.id IS NULL THEN 'PACKAGE'
+        WHEN ${CASE_RADIOLOGY_MATCHER} THEN 'RADIOLOGY'
+        ELSE 'MEDICAL'
+      END AS service_type,
+      COUNT(*)::int AS count,
+      COALESCE(SUM(COALESCE(cs.bundle_price, ci.final_amount, ci.original_amount, 0)), 0) AS revenue
+    FROM cases c
+    LEFT JOIN case_invoices ci ON ci.case_id = c.id
+    LEFT JOIN case_services cs ON cs.case_id = c.id
+    LEFT JOIN services s ON s.id = cs.service_id
+    LEFT JOIN service_categories sc ON sc.id = s.category_id
+    LEFT JOIN packages pkg ON pkg.id = c.package_id
+    WHERE c.created_at BETWEEN $1 AND $2
+      AND (cs.id IS NOT NULL OR c.package_id IS NOT NULL)
+    GROUP BY service_name, service_type
+    ORDER BY revenue DESC, count DESC
+    LIMIT 10
+  `, [dateFrom, dateTo]);
+
+  const dailyBreakdownQuery = pool.query(`
+    SELECT
+      DATE(c.created_at) AS date,
+      COUNT(ci.id)::int AS invoices,
+      COALESCE(SUM(ci.final_amount), 0) AS revenue,
+      COALESCE(SUM(ci.total_paid), 0) AS collected
+    FROM cases c
+    LEFT JOIN case_invoices ci ON ci.case_id = c.id
+    WHERE c.created_at BETWEEN $1 AND $2
+    GROUP BY DATE(c.created_at)
+    ORDER BY date ASC
+  `, [dateFrom, dateTo]);
+
+  const [
+    summaryResult,
+    requestsResult,
+    paymentMethodsResult,
+    topServicesResult,
+    dailyBreakdownResult,
+  ] = await Promise.all([
+    summaryQuery,
+    requestsQuery,
+    paymentMethodsQuery,
+    topServicesQuery,
+    dailyBreakdownQuery,
+  ]);
+
+  return {
+    period: { type: period, from: dateFrom, to: dateTo },
+    summary: summaryResult.rows[0],
+    requests: requestsResult.rows[0],
+    payment_methods: paymentMethodsResult.rows,
+    top_services: topServicesResult.rows,
+    daily_breakdown: dailyBreakdownResult.rows,
+  };
+}
+
 router.get('/financial', authenticate, adminOnly, readLimiter, asyncHandler(async (req, res) => {
+  const report = await buildLegacyFinancialReport(req.query);
+  res.json(report);
+}));
+
+router.get('/financial-requests-legacy', authenticate, adminOnly, readLimiter, asyncHandler(async (req, res) => {
   const { period, dateFrom, dateTo } = resolveFinancialDateRange(req.query);
 
   // إجماليات الفواتير

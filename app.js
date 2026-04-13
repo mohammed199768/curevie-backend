@@ -124,7 +124,7 @@ app.use('/api/v1/files',         filesRoutes);
 // app.use('/api/v1/payments',      require('./modules/payments/payment.routes'));
 app.use('/api/v1/contact',       require('./modules/contact/contact.routes'));
 app.use('/api/v1/notifications', require('./modules/notifications/notification.routes'));
-// app.use('/api/v1/reports',       require('./modules/reports/report.routes'));
+app.use('/api/v1/reports',       require('./modules/reports/report.routes'));
 
 // =============================================
 // HEALTH CHECK

@@ -35,18 +35,6 @@ async function listCombinedPatients(req, res) {
       WHERE c.patient_id IS NULL
         AND c.guest_name IS NOT NULL
         AND c.guest_phone IS NOT NULL
-
-      UNION ALL
-
-      SELECT
-        sr.guest_name AS name,
-        sr.guest_phone AS phone,
-        sr.guest_address AS address,
-        sr.created_at AS created_at
-      FROM service_requests sr
-      WHERE sr.patient_id IS NULL
-        AND sr.guest_name IS NOT NULL
-        AND sr.guest_phone IS NOT NULL
     ),
     guest_rows AS (
       SELECT
