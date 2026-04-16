@@ -5,19 +5,41 @@ const { logger } = require('../utils/logger');
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
+function normalizeValue(value, fallback = 'unknown') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized || fallback;
+}
+
+function normalizeRole(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return normalized || 'UNKNOWN';
+}
+
+function getIpAddress(req) {
+  const forwardedFor = req.headers?.['x-forwarded-for'];
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function buildLimiterKey(...parts) {
+  return parts
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(':');
+}
+
 const onLimitReached = (req, res, options) => {
   logger.warn('Rate limit exceeded', {
-    ip: req.ip,
+    ip: getIpAddress(req),
     path: req.path,
     method: req.method,
     userId: req.user?.id || 'guest',
   });
 };
 
-// AUDIT-FIX: Rate limiter Redis store for multi-instance deployments
-// Uses ioredis client from cache.js; sendCommand maps to ioredis .call()
-// Lazy init: on first request, checks Redis availability and creates the
-// appropriate store (Redis for multi-instance, in-memory as fallback)
 function createLimiter(opts) {
   const { prefix, ...rateLimitOpts } = opts;
   let limiter = null;
@@ -48,11 +70,16 @@ function createLimiter(opts) {
   };
 }
 
-// Strict: Login/Register — 5 attempts per 15 min
-const authLimiter = createLimiter({
-  prefix: 'auth',
+const loginLimiter = createLimiter({
+  prefix: 'auth-login',
   windowMs: 15 * 60 * 1000,
   max: isDevelopment ? 200 : 5,
+  keyGenerator: (req) =>
+    buildLimiterKey(
+      getIpAddress(req),
+      normalizeRole(req.body?.role),
+      normalizeValue(req.body?.email)
+    ),
   message: { message: 'Too many attempts. Please try again after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -62,7 +89,77 @@ const authLimiter = createLimiter({
   },
 });
 
-// Medium: General API — 100 requests per 10 min
+const registerLimiter = createLimiter({
+  prefix: 'auth-register',
+  windowMs: 15 * 60 * 1000,
+  max: isDevelopment ? 200 : 5,
+  keyGenerator: (req) =>
+    buildLimiterKey(getIpAddress(req), normalizeValue(req.body?.email)),
+  message: { message: 'Too many attempts. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    onLimitReached(req, res, options);
+    res.status(429).json(options.message);
+  },
+});
+
+const refreshLimiter = createLimiter({
+  prefix: 'auth-refresh',
+  windowMs: 15 * 60 * 1000,
+  max: isDevelopment ? 500 : 30,
+  keyGenerator: (req) =>
+    buildLimiterKey(
+      getIpAddress(req),
+      normalizeRole(req.headers?.['x-auth-role'])
+    ),
+  message: { message: 'Too many attempts. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    onLimitReached(req, res, options);
+    res.status(429).json(options.message);
+  },
+});
+
+const logoutLimiter = createLimiter({
+  prefix: 'auth-logout',
+  windowMs: 15 * 60 * 1000,
+  max: isDevelopment ? 500 : 30,
+  keyGenerator: (req) =>
+    buildLimiterKey(
+      getIpAddress(req),
+      normalizeRole(req.user?.role),
+      normalizeValue(req.user?.id)
+    ),
+  message: { message: 'Too many attempts. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    onLimitReached(req, res, options);
+    res.status(429).json(options.message);
+  },
+});
+
+const accountActionLimiter = createLimiter({
+  prefix: 'auth-account-action',
+  windowMs: 15 * 60 * 1000,
+  max: isDevelopment ? 200 : 10,
+  keyGenerator: (req) =>
+    buildLimiterKey(
+      getIpAddress(req),
+      normalizeRole(req.user?.role || req.body?.role),
+      normalizeValue(req.user?.id || req.body?.email)
+    ),
+  message: { message: 'Too many attempts. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    onLimitReached(req, res, options);
+    res.status(429).json(options.message);
+  },
+});
+
 const apiLimiter = createLimiter({
   prefix: 'api',
   windowMs: 10 * 60 * 1000,
@@ -76,7 +173,6 @@ const apiLimiter = createLimiter({
   },
 });
 
-// Relaxed: Read endpoints — 300 requests per 10 min
 const readLimiter = createLimiter({
   prefix: 'read',
   windowMs: 10 * 60 * 1000,
@@ -86,7 +182,6 @@ const readLimiter = createLimiter({
   legacyHeaders: false,
 });
 
-// Strict: Guest requests — 10 per hour per IP
 const guestRequestLimiter = createLimiter({
   prefix: 'guest',
   windowMs: 60 * 60 * 1000,
@@ -100,4 +195,14 @@ const guestRequestLimiter = createLimiter({
   },
 });
 
-module.exports = { authLimiter, apiLimiter, readLimiter, guestRequestLimiter };
+module.exports = {
+  authLimiter: loginLimiter,
+  loginLimiter,
+  registerLimiter,
+  refreshLimiter,
+  logoutLimiter,
+  accountActionLimiter,
+  apiLimiter,
+  readLimiter,
+  guestRequestLimiter,
+};

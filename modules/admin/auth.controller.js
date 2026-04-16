@@ -51,13 +51,17 @@ function clearRefreshCookies(res, role) {
 }
 
 function readRefreshCookie(req, role) {
-  const normalizedRole = normalizeAuthRole(role || req.headers['x-auth-role']);
+  const normalizedRole = normalizeAuthRole(role || req.headers?.['x-auth-role']);
   if (normalizedRole) {
     return req.cookies?.[getRefreshCookieName(normalizedRole)] || req.cookies?.refresh_token || null;
   }
 
   if (req.cookies?.refresh_token) {
     return req.cookies.refresh_token;
+  }
+
+  if (req.body?.refresh_token) {
+    return req.body.refresh_token;
   }
 
   const roleScopedTokens = Object.values(REFRESH_COOKIE_NAMES)
@@ -162,7 +166,7 @@ async function register(req, res) {
 }
 
 async function refresh(req, res) {
-  const requestedRole = normalizeAuthRole(req.headers['x-auth-role']);
+  const requestedRole = normalizeAuthRole(req.headers?.['x-auth-role']);
   const refresh_token = readRefreshCookie(req); // FIX: F15 — prefer the caller's role-scoped refresh cookie and only fall back to the legacy shared cookie.
   if (!refresh_token) { // FIX: F13 — fail fast when the refresh cookie is missing.
     return res.status(401).json({ message: 'Refresh token missing', code: 'NO_TOKEN' }); // FIX: F13 — keep refresh failures explicit for frontend auth recovery.
