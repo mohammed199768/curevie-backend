@@ -60,8 +60,8 @@ class NotificationRepository extends BaseRepository {
         [userId, userRole], db
       ),
       this._query(
-        'SELECT COUNT(*)::int AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE',
-        [userId], db
+        'SELECT COUNT(*)::int AS count FROM notifications WHERE user_id = $1 AND user_role = $2 AND is_read = FALSE',
+        [userId, userRole], db
       ),
     ]);
 
@@ -70,6 +70,18 @@ class NotificationRepository extends BaseRepository {
       total: count.rows[0].total,
       unread_count: unreadCount.rows[0].count,
     };
+  }
+
+  async countUnread(userId, userRole, db = null) {
+    const result = await this._query(
+      `SELECT COUNT(*)::int AS count
+       FROM notifications
+       WHERE user_id = $1 AND user_role = $2 AND is_read = FALSE`,
+      [userId, userRole],
+      db
+    );
+
+    return result.rows[0]?.count || 0;
   }
 
   async markAsRead(notificationId, userId, db = null) {
@@ -91,7 +103,7 @@ class NotificationRepository extends BaseRepository {
 
   async deleteNotification(notificationId, userId, db = null) {
     return this._queryOne(
-      'DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id',
+      'DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id, user_id, user_role',
       [notificationId, userId], db
     );
   }

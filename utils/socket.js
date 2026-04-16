@@ -8,6 +8,30 @@ const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 
 let io = null;
 
+function getUserRoom(userId) {
+  return userId ? `user:${userId}` : null;
+}
+
+function emitToUser(userId, event, payload = {}) {
+  if (!io || !userId) return false;
+
+  const roomName = getUserRoom(userId);
+  if (!roomName) return false;
+
+  io.to(roomName).emit(event, payload);
+  return true;
+}
+
+async function emitChatUnreadUpdate(chatRepo, userId, userRole, payload = {}) {
+  if (!chatRepo || !userId || !userRole) return;
+
+  const unreadCount = await chatRepo.countUnreadByParticipant(userId, userRole);
+  emitToUser(userId, 'chat_unread_updated', {
+    ...payload,
+    unread_count: Number(unreadCount || 0),
+  });
+}
+
 function initSocketServer(httpServer) {
   const pubClient = new Redis(redisUrl);
   const subClient = pubClient.duplicate();
@@ -20,11 +44,16 @@ function initSocketServer(httpServer) {
   io = new Server(httpServer, {
     cors: {
       origin: [
+        'https://curevie.net',
+        'https://www.curevie.net',
+        'https://admin.curevie.net',
+        'https://provider.curevie.net',
         'https://curvie.net',
         'https://www.curvie.net',
         'https://admin.curvie.net',
         'https://provider.curvie.net',
         /^https:\/\/curvie.*\.vercel\.app$/,
+        /^https:\/\/curevie.*\.vercel\.app$/,
       ],
       credentials: true,
     },
@@ -49,6 +78,11 @@ function initSocketServer(httpServer) {
   });
 
   io.on('connection', (socket) => {
+    const userRoom = getUserRoom(socket.user.id);
+    if (userRoom) {
+      socket.join(userRoom);
+    }
+
     logger.info('Socket connected', {
       userId: socket.user.id,
       role: socket.user.role,
@@ -80,7 +114,14 @@ function initSocketServer(httpServer) {
         socket.join(`room:${room_id}`);
         socket.emit('joined_room', { room_id });
 
-        await chatRepo.markAsRead(room_id, user.id);
+        const markedMessages = await chatRepo.markAsRead(room_id, user.id);
+        if (markedMessages.length) {
+          await emitChatUnreadUpdate(chatRepo, user.id, user.role, {
+            source: 'case_room',
+            room_id,
+            case_id: room.case_id,
+          });
+        }
 
         logger.info('Socket joined room', {
           userId: user.id, room_id,
@@ -102,6 +143,12 @@ function initSocketServer(httpServer) {
         const ChatRepository = require('../repositories/ChatRepository');
         const chatRepo = new ChatRepository(pool);
 
+        const room = await chatRepo.findRoomById(room_id);
+        if (!room) {
+          socket.emit('error', { message: 'Room not found' });
+          return;
+        }
+
         const socketRooms = socket.rooms;
         if (!socketRooms.has(`room:${room_id}`)) {
           socket.emit('error', { message: 'Join the room first' });
@@ -118,6 +165,21 @@ function initSocketServer(httpServer) {
         });
 
         io.to(`room:${room_id}`).emit('new_message', message);
+
+        const participants = [
+          { userId: room.patient_id, userRole: 'PATIENT' },
+          { userId: room.provider_id, userRole: 'PROVIDER' },
+        ].filter((participant) => participant.userId);
+
+        await Promise.allSettled(
+          participants.map((participant) =>
+            emitChatUnreadUpdate(chatRepo, participant.userId, participant.userRole, {
+              source: 'case_room',
+              room_id,
+              case_id: room.case_id,
+            })
+          )
+        );
       } catch (err) {
         logger.error('Socket send_message error', { message: err.message });
         socket.emit('error', { message: 'Failed to send message' });
@@ -145,4 +207,4 @@ function getIO() {
   return io;
 }
 
-module.exports = { initSocketServer, getIO };
+module.exports = { initSocketServer, getIO, emitToUser, getUserRoom };

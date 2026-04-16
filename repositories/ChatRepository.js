@@ -135,6 +135,21 @@ class ChatRepository {
     return result.rows.reverse();
   }
 
+  async getLatestMessage(room_id) {
+    const result = await this.pool.query(
+      `
+      SELECT *
+      FROM case_chat_messages
+      WHERE room_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [room_id]
+    );
+
+    return result.rows[0] || null;
+  }
+
   async markAsRead(room_id, reader_id) {
     const result = await this.pool.query(
       `
@@ -161,6 +176,27 @@ class ChatRepository {
       `,
       [room_id, reader_id]
     );
+    return result.rows[0]?.count || 0;
+  }
+
+  async countUnreadByParticipant(userId, userRole) {
+    if (!userId || !userRole || !['PATIENT', 'PROVIDER'].includes(userRole)) {
+      return 0;
+    }
+
+    const participantColumn = userRole === 'PATIENT' ? 'cr.patient_id' : 'cr.provider_id';
+    const result = await this.pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM case_chat_messages cm
+      JOIN case_chat_rooms cr ON cr.id = cm.room_id
+      WHERE ${participantColumn} = $1
+        AND cm.sender_id != $1
+        AND cm.is_read = FALSE
+      `,
+      [userId]
+    );
+
     return result.rows[0]?.count || 0;
   }
 }

@@ -3,6 +3,8 @@ const path = require('path');
 const router = express.Router({ mergeParams: true });
 const pool = require('../../config/db');
 const asyncHandler = require('../../utils/asyncHandler');
+const NotificationRepository = require('../../repositories/NotificationRepository');
+const notificationServiceModule = require('../notifications/notification.service');
 const {
   authenticate,
   adminOnly,
@@ -14,6 +16,10 @@ const {
   generateCaseReportPdf,
   generateSickLeavePdf,
 } = require('../../utils/pdf/case-report.generator');
+
+const notifRepo = new NotificationRepository(pool);
+notificationServiceModule.configureNotificationService(notifRepo);
+const notificationService = notificationServiceModule;
 
 async function hasProviderCaseAccess(caseId, providerId) {
   const accessResult = await pool.query(
@@ -103,7 +109,7 @@ router.post('/:id/report/generate', authenticate, adminOnly, asyncHandler(async 
   const { id } = req.params;
 
   const caseResult = await pool.query(
-    'SELECT id, status FROM cases WHERE id = $1 LIMIT 1',
+    'SELECT id, status, patient_id FROM cases WHERE id = $1 LIMIT 1',
     [id]
   );
   const currentCase = caseResult.rows[0];
@@ -148,6 +154,19 @@ router.post('/:id/report/generate', authenticate, adminOnly, asyncHandler(async 
     `,
     [pdfUrl, req.user.id, id]
   );
+
+  if (currentCase.patient_id) {
+    void notificationService.notifyReportPublished({
+      caseId: id,
+      patientId: currentCase.patient_id,
+    }).catch((error) => {
+      logger.warn('CASE_REPORT_NOTIFICATION_FAILED', {
+        caseId: id,
+        patientId: currentCase.patient_id,
+        message: error.message,
+      });
+    });
+  }
 
   return res.json({ message: 'Report generated', pdf_url: pdfUrl });
 }));

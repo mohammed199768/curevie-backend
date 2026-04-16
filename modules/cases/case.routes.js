@@ -14,6 +14,7 @@ const ChatRepository = require('../../repositories/ChatRepository');
 const CaseService = require('./case.service');
 const caseController = require('./case.controller');
 const reportRoutes = require('./case-report.routes');
+const { emitToUser } = require('../../utils/socket');
 
 const router = express.Router();
 const chatRepo = new ChatRepository(pool);
@@ -44,6 +45,14 @@ router.post('/public', guestOrAuthenticated, asyncHandler(async (req, res) => {
 
 router.post('/', authenticate, patientOnly, caseController.createCase);
 router.get('/', authenticate, caseController.listCases);
+router.get('/chat/unread-count', authenticate, asyncHandler(async (req, res) => {
+  if (!['PATIENT', 'PROVIDER'].includes(req.user.role)) {
+    return res.json({ unread_count: 0 });
+  }
+
+  const unreadCount = await chatRepo.countUnreadByParticipant(req.user.id, req.user.role);
+  return res.json({ unread_count: Number(unreadCount || 0) });
+}));
 router.get('/chat/rooms/:room_id/messages', authenticate, asyncHandler(async (req, res) => {
   const room = await chatRepo.findRoomById(req.params.room_id);
 
@@ -64,7 +73,17 @@ router.get('/chat/rooms/:room_id/messages', authenticate, asyncHandler(async (re
     limit: req.query.limit || 50,
     before: req.query.before || null,
   });
-  await chatRepo.markAsRead(room.id, req.user.id);
+  const markedMessages = await chatRepo.markAsRead(room.id, req.user.id);
+
+  if (markedMessages.length) {
+    const unreadCount = await chatRepo.countUnreadByParticipant(req.user.id, req.user.role);
+    emitToUser(req.user.id, 'chat_unread_updated', {
+      source: 'case_room',
+      room_id: room.id,
+      case_id: room.case_id,
+      unread_count: Number(unreadCount || 0),
+    });
+  }
 
   return res.json({ data: messages });
 }));
@@ -194,7 +213,24 @@ router.get('/:id/chat-rooms', authenticate, asyncHandler(async (req, res) => {
     rooms = caseRooms.filter((room) => room.provider_id === req.user.id);
   }
 
-  return res.json({ data: rooms });
+  const roomsWithMeta = await Promise.all(
+    rooms.map(async (room) => {
+      const latestMessage = await chatRepo.getLatestMessage(room.id);
+      const unreadCount = ['PATIENT', 'PROVIDER'].includes(req.user.role)
+        ? await chatRepo.countUnread(room.id, req.user.id)
+        : 0;
+
+      return {
+        ...room,
+        unread_count: Number(unreadCount || 0),
+        last_message_at: latestMessage?.created_at || null,
+        last_message_preview: latestMessage?.content || latestMessage?.file_url || null,
+        last_message_sender_role: latestMessage?.sender_role || null,
+      };
+    })
+  );
+
+  return res.json({ data: roomsWithMeta });
 }));
 
 router.use('/', reportRoutes);
