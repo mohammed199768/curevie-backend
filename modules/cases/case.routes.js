@@ -13,7 +13,8 @@ const asyncHandler = require('../../utils/asyncHandler');
 const ChatRepository = require('../../repositories/ChatRepository');
 const CaseService = require('./case.service');
 const caseController = require('./case.controller');
-const reportRoutes = require('./case-report.routes');
+const reportRoutes  = require('./case-report.routes');
+const invoiceRoutes = require('./case-invoice.routes');
 const { emitToUser } = require('../../utils/socket');
 
 const router = express.Router();
@@ -234,5 +235,6 @@ router.get('/:id/chat-rooms', authenticate, asyncHandler(async (req, res) => {
 }));
 
 router.use('/', reportRoutes);
+router.use('/', invoiceRoutes);
 
 module.exports = router;

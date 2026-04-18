@@ -358,6 +358,14 @@ router.get('/financial', authenticate, adminOnly, readLimiter, asyncHandler(asyn
 }));
 
 router.get('/financial-requests-legacy', authenticate, adminOnly, readLimiter, asyncHandler(async (req, res) => {
+  // REMOVED: This endpoint queried service_requests, invoices, payments tables
+  // which were permanently dropped by migration 039_new_case_system.sql.
+  // Use GET /api/v1/reports/cases/financial for current financial data.
+  return res.status(410).json({
+    message: 'This report endpoint has been retired. Use /api/v1/reports/cases/financial instead.',
+    code: 'ENDPOINT_RETIRED',
+  });
+  // --- DEAD CODE BELOW (kept for reference, never executed) ---
   const { period, dateFrom, dateTo } = resolveFinancialDateRange(req.query);
 
   // إجماليات الفواتير
@@ -480,6 +488,13 @@ router.get('/financial-requests-legacy', authenticate, adminOnly, readLimiter, a
 // تصدير فاتورة PDF
 // =============================================
 router.get('/invoice/:invoiceId/pdf', authenticate, asyncHandler(async (req, res) => {
+  // REMOVED: This endpoint queried the old `invoices` table dropped by migration 039.
+  // For case invoice PDFs use: GET /api/v1/cases/:id/invoice/pdf
+  return res.status(410).json({
+    message: 'This endpoint has been retired. Use /api/v1/cases/:id/invoice/pdf instead.',
+    code: 'ENDPOINT_RETIRED',
+  });
+  // --- DEAD CODE BELOW (kept for reference, never executed) ---
   const { invoiceId } = req.params;
   if (!['ADMIN', 'PROVIDER', 'PATIENT'].includes(req.user.role)) {
     return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
@@ -557,7 +572,12 @@ router.get('/invoice/:invoiceId/pdf', authenticate, asyncHandler(async (req, res
 router.get(
   '/requests/:id/medical/pdf',
   authenticate,
-  asyncHandler(reportController.downloadMedicalRequestPdf)
+  // REMOVED: Queried old service_requests table dropped by migration 039.
+  // For case medical reports use: GET /api/v1/cases/:id/report/download
+  asyncHandler(async (req, res) => res.status(410).json({
+    message: 'This endpoint has been retired. Use /api/v1/cases/:id/report/download instead.',
+    code: 'ENDPOINT_RETIRED',
+  }))
 );
 
 // =============================================
@@ -605,55 +625,12 @@ router.post('/convert', authenticate, staffOnly, apiLimiter, (req, res, next) =>
 // كشف حساب مريض كامل
 // =============================================
 router.get('/patients/:id/statement', authenticate, adminOnly, asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { from, to } = req.query;
-
-  const dateFrom = from ? new Date(from) : new Date(new Date().setFullYear(new Date().getFullYear() - 1));
-  const dateTo   = to ? toEndOfDay(to) : new Date();
-
-  const patient = await pool.query(
-    'SELECT id, full_name, email, phone, is_vip, vip_discount, total_points FROM patients WHERE id = $1',
-    [id]
-  );
-  if (!patient.rows[0]) return res.status(404).json({ message: 'المريض غير موجود' });
-
-  const invoices = await pool.query(`
-    SELECT
-      i.*,
-      sr.service_type,
-      sr.status AS request_status,
-      COALESCE(i.service_name_snapshot, sr.service_name_snapshot, s.name, lt.name, lp.name_en, lpk.name_en, pk.name) AS service_name,
-      c.code AS coupon_code
-    FROM invoices i
-    LEFT JOIN service_requests sr ON sr.id = i.request_id
-    LEFT JOIN services s ON s.id = sr.service_id
-    LEFT JOIN lab_tests lt ON lt.id = sr.lab_test_id
-    LEFT JOIN lab_panels lp ON lp.id = sr.lab_panel_id
-    LEFT JOIN lab_packages lpk ON lpk.id = sr.lab_package_id
-    LEFT JOIN packages pk ON pk.id = sr.package_id
-    LEFT JOIN coupons c ON c.id = i.coupon_id
-    WHERE i.patient_id = $1 AND i.created_at BETWEEN $2 AND $3
-    ORDER BY i.created_at DESC
-  `, [id, dateFrom, dateTo]);
-
-  const stats = await pool.query(`
-    SELECT
-      COUNT(*)::int AS total_invoices,
-      COALESCE(SUM(original_amount), 0) AS gross_total,
-      COALESCE(SUM(final_amount), 0) AS net_total,
-      COALESCE(SUM(total_paid), 0) AS total_paid,
-      COALESCE(SUM(remaining_amount), 0) AS total_remaining,
-      COALESCE(SUM(vip_discount_amount), 0) AS total_vip_savings,
-      COALESCE(SUM(coupon_discount_amount), 0) AS total_coupon_savings
-    FROM invoices
-    WHERE patient_id = $1 AND created_at BETWEEN $2 AND $3
-  `, [id, dateFrom, dateTo]);
-
-  res.json({
-    patient: patient.rows[0],
-    period: { from: dateFrom, to: dateTo },
-    stats: stats.rows[0],
-    invoices: invoices.rows,
+  // REMOVED: Queried old `invoices` and `service_requests` tables dropped by migration 039.
+  // Patient financial history is now available via GET /api/v1/reports/cases/financial
+  // filtered by patient_id, or via GET /api/v1/cases?patient_id=:id.
+  return res.status(410).json({
+    message: 'This endpoint has been retired. Patient case history is available via /api/v1/cases?patient_id=:id',
+    code: 'ENDPOINT_RETIRED',
   });
 }));
 
