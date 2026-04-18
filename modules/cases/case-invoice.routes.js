@@ -27,7 +27,7 @@ const { generateCaseInvoicePdf } = require('../../utils/pdf/case-invoice.generat
 // HELPERS
 // ============================================================
 
-/** Round to 3 decimal places (KWD precision). */
+/** Round to 3 decimal places (JOD precision). */
 function toMoney(value) {
   const n = Math.round(Number(value) * 1000) / 1000;
   return Number.isFinite(n) ? n : 0;

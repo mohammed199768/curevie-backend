@@ -128,7 +128,7 @@ function buildInvoiceHtml({
           </td>
           <td>${escapeHtml(adj.reason || '-')}</td>
           <td class="num ${adj.type === 'DISCOUNT' ? 'text-green' : 'text-red'}">
-            ${adj.type === 'DISCOUNT' ? '−' : '+'}${formatMoney(adj.amount)} KWD
+            ${adj.type === 'DISCOUNT' ? '−' : '+'}${formatMoney(adj.amount)} JOD
           </td>
           <td class="center">${formatDate(adj.created_at)}</td>
         </tr>`).join('')
@@ -141,7 +141,7 @@ function buildInvoiceHtml({
           <td class="center">${i + 1}</td>
           <td class="center ltr">${formatDateTime(p.created_at)}</td>
           <td class="center">${methodLabel(p.method)}</td>
-          <td class="num bold text-green">${formatMoney(p.amount)} KWD</td>
+          <td class="num bold text-green">${formatMoney(p.amount)} JOD</td>
           <td>${escapeHtml(p.notes || '-')}</td>
         </tr>`).join('')
     : '<tr><td colspan="5" class="empty">لا توجد مدفوعات مسجلة</td></tr>';
@@ -431,7 +431,7 @@ function buildInvoiceHtml({
         <th>الخدمة</th>
         <th style="text-align:center;">مقدم الخدمة</th>
         <th style="text-align:left;">السعر الأصلي</th>
-        <th style="text-align:left;">سعر الباقة (KWD)</th>
+        <th style="text-align:left;">سعر الباقة (JOD)</th>
       </tr>
     </thead>
     <tbody>${servicesRows}</tbody>
@@ -456,24 +456,24 @@ function buildInvoiceHtml({
     <h3>الملخص المالي</h3>
     <div class="sum-line">
       <span>المبلغ الأصلي</span>
-      <span class="amount">${formatMoney(invoice.original_amount)} KWD</span>
+      <span class="amount">${formatMoney(invoice.original_amount)} JOD</span>
     </div>
     ${totalDiscount > 0 ? `
     <div class="sum-line" style="color:#155724;">
       <span>إجمالي الخصومات</span>
-      <span class="amount text-green">− ${formatMoney(totalDiscount)} KWD</span>
+      <span class="amount text-green">− ${formatMoney(totalDiscount)} JOD</span>
     </div>` : ''}
     <div class="sum-line total-line">
       <span>المبلغ النهائي المستحق</span>
-      <span class="amount">${formatMoney(invoice.final_amount)} KWD</span>
+      <span class="amount">${formatMoney(invoice.final_amount)} JOD</span>
     </div>
     <div class="sum-line paid-line">
       <span>إجمالي المدفوع</span>
-      <span class="amount">${formatMoney(invoice.total_paid)} KWD</span>
+      <span class="amount">${formatMoney(invoice.total_paid)} JOD</span>
     </div>
     <div class="sum-line remain-line">
       <span>المتبقي</span>
-      <span class="amount">${formatMoney(invoice.remaining_amount)} KWD</span>
+      <span class="amount">${formatMoney(invoice.remaining_amount)} JOD</span>
     </div>
   </div>
 
@@ -485,7 +485,7 @@ function buildInvoiceHtml({
         <th style="text-align:center;">#</th>
         <th style="text-align:center;">التاريخ والوقت</th>
         <th style="text-align:center;">طريقة الدفع</th>
-        <th style="text-align:left;">المبلغ (KWD)</th>
+        <th style="text-align:left;">المبلغ (JOD)</th>
         <th>ملاحظات</th>
       </tr>
     </thead>
