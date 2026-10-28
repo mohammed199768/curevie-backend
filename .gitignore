@@ -17,3 +17,4 @@ test_req.js
 check_*.js
 collect_code.js
 seed_output.log
+backups/
