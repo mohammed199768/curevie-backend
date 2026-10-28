@@ -1,253 +1,78 @@
-# 🏥 Medical Platform API
+# Curevie API — منصة الرعاية الطبية المنزلية
 
-Backend API للمنصة الطبية الوسيطة - Node.js + PostgreSQL
+Node.js 20 + Express + PostgreSQL + Redis + Socket.io.
 
----
+النظام مبني على **الحالات (cases)**: كل طلب حالة، وفيه بنود. البند إما **خدمة** (طبية، تمريض، أشعة، مختبر)
+أو **باقة** (مجموعة خدمات بسعر ثابت). كل بند يتعيّن لمقدم خدمة واحد.
 
-## 🚀 تشغيل المشروع
+```
+المريض / الضيف يطلب  ──►  الأدمن يشوف المرشّحين (حسب النوع والمنطقة والتوفر والتقييم) ويعيّن
+        ▲                                              │
+        │                                              ▼
+   تتبّع + إشعارات + شات        مقدم الخدمة: قبول / رفض ► بدء ► رفع ملفات ► إنهاء
+        │                                              │
+        └──── الأدمن: دفعات ► إغلاق ► تقرير PDF ◄──────┘  ◄── المريض يقيّم
+```
+
+التفاصيل الكاملة للـ endpoints والأحداث في [API_CONTRACT.md](API_CONTRACT.md).
+
+## التشغيل محلياً
 
 ```bash
-# 1. تثبيت الحزم
-npm install
-
-# 2. إعداد .env
-cp .env.example .env
-# عدّل DATABASE_URL و JWT_SECRET
-
-# 3. تهيئة قاعدة البيانات
-npm run db:init
-
-# 4. تشغيل المشروع
+npm ci
+cp .env.example .env        # عبّي JWT_SECRET و JWT_REFRESH_SECRET و DATABASE_URL و INITIAL_ADMIN_*
+npm run db:init             # يطبّق الـ migrations وينشئ أول أدمن إذا ما في أدمن
 npm run dev
 ```
 
-**Default Admin:** `admin@medical.com` / `admin123`
+بدون Redis النظام يشتغل محلياً (rate limit بالذاكرة). في الإنتاج Redis إجباري.
+بدون إعدادات Bunny الملفات الطبية تتخزن على القرص في `uploads/private`، ورفع الصور العامة يكون معطّل.
 
----
+## قاعدة البيانات
 
-## 📡 API Endpoints
+- `config/migrations/000_baseline.sql` هو الأساس الوحيد. ينشئ قاعدة جديدة كاملة، وعلى قاعدة الإنتاج الحالية
+  يضيف الناقص ويحذف جداول نظام الطلبات القديم (`service_requests` وتوابعها، `coupons`، `points_log`).
+  تشغيله مرتين لا يغيّر شيئاً.
+- أي تعديل جديد = ملف جديد `001_xxx.sql`، `002_xxx.sql`، ... بدون `BEGIN/COMMIT` (المشغّل يلفّ كل ملف بـ transaction).
+- `npm run db:migrate` يتوقف عند أول خطأ ويرجع exit code غير صفر، ويستعمل advisory lock.
+- **قبل أول نشر لهذه النسخة على الإنتاج خذ نسخة احتياطية:** `deploy.sh` يعمل `pg_dump` تلقائياً قبل الـ migrations.
 
-### 🔐 Auth
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/auth/login` | تسجيل دخول (Admin/Provider/Patient) |
-| POST | `/api/auth/register` | تسجيل مريض جديد |
+## الاختبارات
 
-**Login Body:**
-```json
-{
-  "email": "admin@medical.com",
-  "password": "admin123",
-  "role": "ADMIN"  // ADMIN | PROVIDER | PATIENT
-}
-```
-
----
-
-### 👥 Patients
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/api/patients` | Staff | كل المرضى (search, pagination) |
-| GET | `/api/patients/:id` | Staff | مريض + تاريخه الطبي |
-| PUT | `/api/patients/:id/medical` | Staff | تحديث البيانات الطبية |
-| POST | `/api/patients/:id/history` | Staff | إضافة ملاحظة طبية |
-| PUT | `/api/patients/:id/vip` | Admin | تفعيل/إلغاء VIP |
-| DELETE | `/api/patients/:id` | Admin | حذف مريض |
-
----
-
-### 👨‍⚕️ Providers
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/api/providers` | Admin | إضافة مزود خدمة |
-| GET | `/api/providers` | Admin | كل المزودين (filter by type/available) |
-| PUT | `/api/providers/:id` | Admin | تحديث مزود |
-| DELETE | `/api/providers/:id` | Admin | حذف مزود |
-
-**Provider Types:** `DOCTOR | NURSE | LAB_TECH | XRAY_TECH`
-
----
-
-### 🏥 Services
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/api/services/categories` | Auth | تصنيفات الخدمات |
-| POST | `/api/services/categories` | Admin | إضافة تصنيف |
-| GET | `/api/services` | Auth | الخدمات الطبية والأشعة |
-| POST | `/api/services` | Admin | إضافة خدمة |
-| PUT | `/api/services/:id` | Admin | تحديث خدمة |
-| DELETE | `/api/services/:id` | Admin | إلغاء تفعيل خدمة |
-
----
-
-### 🧪 Lab Tests & Packages
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/api/lab` | Auth | كل الفحوصات |
-| POST | `/api/lab` | Admin | إضافة فحص |
-| PUT | `/api/lab/:id` | Admin | تحديث فحص |
-| GET | `/api/lab/packages` | Auth | كل الباقات + فحوصاتها |
-| POST | `/api/lab/packages` | Admin | إضافة باقة |
-| PUT | `/api/lab/packages/:id` | Admin | تحديث باقة |
-
----
-
-### 📋 Service Requests
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/api/requests` | Public | إنشاء طلب (مريض أو ضيف) |
-| GET | `/api/requests` | Staff | كل الطلبات |
-| GET | `/api/requests/:id` | Auth | تفاصيل طلب |
-| PUT | `/api/requests/:id/status` | Admin | تغيير حالة الطلب |
-| PUT | `/api/requests/:id/assign` | Admin | تعيين مزود للطلب |
-| POST | `/api/requests/:id/results` | Staff | إضافة نتائج فحص |
-
-**Request Status Flow:**
-```
-PENDING → ACCEPTED → ASSIGNED → COMPLETED
-                  ↘ CANCELLED
-```
-
-**إنشاء طلب - Patient:**
-```json
-{
-  "request_type": "PATIENT",
-  "patient_id": "uuid",
-  "service_type": "LAB",
-  "package_id": "uuid",
-  "coupon_code": "SAVE20",
-  "points_to_use": 100,
-  "notes": "ملاحظات"
-}
-```
-
-**إنشاء طلب - Guest:**
-```json
-{
-  "request_type": "GUEST",
-  "guest_name": "أحمد محمد",
-  "guest_phone": "0791234567",
-  "guest_address": "عمان، الجبيهة",
-  "service_type": "MEDICAL",
-  "service_id": "uuid",
-  "notes": "ملاحظات"
-}
-```
-
----
-
-### 💰 Invoices
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/api/invoices` | Admin | كل الفواتير |
-| GET | `/api/invoices/stats` | Admin | إحصائيات الإيرادات |
-| PUT | `/api/invoices/:id/pay` | Admin | تسجيل الدفع |
-| GET | `/api/invoices/coupons` | Admin | كل الكوبونات |
-| POST | `/api/invoices/coupons` | Admin | إضافة كوبون |
-| GET | `/api/invoices/coupons/validate/:code` | Auth | التحقق من كوبون |
-| PUT | `/api/invoices/coupons/:id` | Admin | تحديث كوبون |
-
----
-
-## 🗂️ هيكل المشروع
-
-```
-src/
-├── config/
-│   ├── db.js          ← اتصال PostgreSQL
-│   ├── schema.sql     ← هيكل قاعدة البيانات
-│   └── initDb.js      ← تهيئة DB
-├── middlewares/
-│   └── auth.js        ← JWT + Authorization
-├── modules/
-│   ├── admin/         ← Auth routes
-│   ├── patients/      ← إدارة المرضى
-│   ├── providers/     ← إدارة مزودي الخدمة
-│   ├── services/      ← الخدمات والتصنيفات
-│   ├── labtests/      ← الفحوصات والباقات
-│   ├── requests/      ← الطلبات (core)
-│   └── invoices/      ← الفواتير والكوبونات
-├── app.js
-└── server.js
-```
-
----
-
-## 💡 نظام النقاط
-
-- المريض يكسب **1 نقطة** لكل وحدة مدفوعة
-- **1 نقطة = 0.01** من العملة عند الاستبدال
-- يمكن استخدام النقاط عند إنشاء أي طلب
-
-## 🎫 نظام الكوبونات
-
-- `PERCENTAGE`: خصم بنسبة مئوية
-- `FIXED`: خصم بمبلغ ثابت
-- يمكن تحديد: حد أدنى للطلب، عدد مرات الاستخدام، تاريخ الانتهاء
-
-## ⭐ نظام VIP
-
-- الأدمن يحدد VIP يدوياً
-- خصم دائم بنسبة محددة على كل الخدمات
-- نقاط تتراكم مع كل طلب
-
----
-
-## Smart Reference Ranges (Lab)
-
-### Range Management Endpoints
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/api/lab/:testId/ranges` | Admin | List all ranges for a lab test |
-| POST | `/api/lab/:testId/ranges` | Admin | Create a single range |
-| POST | `/api/lab/:testId/ranges/bulk` | Admin | Bulk import ranges |
-| PUT | `/api/lab/ranges/:rangeId` | Admin | Update a range |
-| DELETE | `/api/lab/ranges/:rangeId` | Admin | Delete one range |
-| DELETE | `/api/lab/:testId/ranges` | Admin | Delete all ranges for a test |
-| GET | `/api/lab/:testId/ranges/resolve?gender=male&age=35&condition=fasting` | Admin/Provider | Preview matched range |
-
-### Bulk Import JSON Format
-```json
-{
-  "ranges": [
-    {
-      "gender": "male",
-      "age_min": 18,
-      "age_max": 999,
-      "range_low": 13.5,
-      "range_high": 17.5,
-      "unit": "g/dL",
-      "notes": "Adult male hemoglobin",
-      "priority": 10
-    },
-    {
-      "gender": "female",
-      "age_min": 18,
-      "age_max": 999,
-      "range_low": 12.0,
-      "range_high": 15.5,
-      "unit": "g/dL",
-      "priority": 10
-    },
-    {
-      "gender": "female",
-      "age_min": 18,
-      "age_max": 999,
-      "condition": "pregnant",
-      "range_low": 11.0,
-      "range_high": 14.0,
-      "unit": "g/dL",
-      "priority": 20
-    }
-  ]
-}
-```
-
-### Replace All Ranges For A Test
-1. `DELETE /api/lab/:testId/ranges`
-2. `POST /api/lab/:testId/ranges/bulk`
-
-### Seed Common Ranges
 ```bash
-npm run db:seed:ranges
+npm run test:unit
+TEST_DATABASE_URL=postgres://postgres@localhost:5432/curevie_test npm run test:integration
 ```
+
+اختبار التكامل **يمسح** قاعدة البيانات المعطاة بالكامل ثم يجرب الدورة كاملة:
+- السعر من السيرفر، وخصم الـ VIP
+- منع وصول المزوّد لحالات غيره
+- ترشيح المزوّدين، وقبول/رفض/بدء/إنهاء
+- رفع الملفات وفحص magic bytes
+- الدفعات والتعديلات والإغلاق والتقييم
+- تتبّع الضيف وربط طلبه بحساب
+- تعطيل المزوّد، وتدوير الـ refresh tokens
+
+## الأمان باختصار
+
+- الأسعار تُحسب على السيرفر فقط، والعميل لا يرسل أي سعر.
+- كل وصول لحالة/ملف/فاتورة/شات يتحقق من الدور والملكية، وغير المصرّح له يرى 404.
+- الملفات الطبية خاصة بالكامل: لا يوجد `/uploads` عام، والتحميل يمر عبر الـ API بعد التحقق.
+- الـ refresh tokens مخزّنة كـ SHA-256 ومع rotation، وإعادة استخدامها تلغي كل الجلسات.
+- الحساب المعطّل أو المحذوف يفقد جلساته فوراً.
+- الـ rate limit مبني على عنوان العميل الحقيقي من nginx، مع حد لكل حساب على تسجيل الدخول.
+- لا يوجد أي حساب افتراضي، وأول أدمن يُنشأ فقط من متغيرات البيئة.
+
+## النشر
+
+```bash
+cp .env.example .env               # NODE_ENV=production، أسرار JWT، DB_USER/DB_PASSWORD/DB_NAME، INITIAL_ADMIN_*
+SEED_CATALOG=1 ./deploy.sh         # أول نشر فقط: يحمّل كتالوج الإطلاق (64 خدمة + 6 باقات)
+./deploy.sh                        # كل تحديث بعدها: build ► pg_dump ► migrations ► up -d ► health check
+```
+
+`npm run db:seed:catalog` آمن على الإنتاج: لا يعدّل أي خدمة أو باقة موجودة بنفس الاسم العربي، فأسعار الإدارة تبقى كما هي.
+لكن لا تشغّله مع كل نشر: إذا غيّرت الإدارة اسم خدمة، سيعيد إنشاءها بالاسم القديم.
+
+
+nginx هو الواجهة (TLS)، ويمرر `/api/` و `/socket.io/` فقط.

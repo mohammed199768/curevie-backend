@@ -84,11 +84,11 @@ class NotificationRepository extends BaseRepository {
     return result.rows[0]?.count || 0;
   }
 
-  async markAsRead(notificationId, userId, db = null) {
+  async markAsRead(notificationId, userId, userRole, db = null) {
     return this._queryOne(
-      `UPDATE notifications SET is_read = TRUE, read_at = NOW()
-       WHERE id = $1 AND user_id = $2 RETURNING *`,
-      [notificationId, userId], db
+      `UPDATE notifications SET is_read = TRUE, read_at = COALESCE(read_at, NOW())
+       WHERE id = $1 AND user_id = $2 AND user_role = $3 RETURNING *`,
+      [notificationId, userId, userRole], db
     );
   }
 
@@ -101,10 +101,10 @@ class NotificationRepository extends BaseRepository {
     return result.rowCount;
   }
 
-  async deleteNotification(notificationId, userId, db = null) {
+  async deleteNotification(notificationId, userId, userRole, db = null) {
     return this._queryOne(
-      'DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id, user_id, user_role',
-      [notificationId, userId], db
+      'DELETE FROM notifications WHERE id = $1 AND user_id = $2 AND user_role = $3 RETURNING id, user_id, user_role',
+      [notificationId, userId, userRole], db
     );
   }
 }

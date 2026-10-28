@@ -1,10 +1,5 @@
 const BaseRepository = require('./BaseRepository');
 
-const RADIOLOGY_MATCHER = `(
-  LOWER(COALESCE(s.name, '')) ~ '(xray|x-ray|radiology|scan|اشعة|أشعة)'
-  OR LOWER(COALESCE(c.name, '')) ~ '(xray|x-ray|radiology|scan|اشعة|أشعة)'
-)`;
-
 class ServiceRepository extends BaseRepository {
   constructor(pool) {
     super(pool, 'services');
@@ -98,10 +93,9 @@ class ServiceRepository extends BaseRepository {
       params.push(is_vip_exclusive);
       where.push(`s.is_vip_exclusive = $${params.length}`);
     }
-    if (service_kind === 'RADIOLOGY') {
-      where.push(RADIOLOGY_MATCHER);
-    } else if (service_kind === 'MEDICAL') {
-      where.push(`NOT ${RADIOLOGY_MATCHER}`);
+    if (service_kind) {
+      params.push(service_kind);
+      where.push(`s.service_kind = $${params.length}`);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -126,14 +120,14 @@ class ServiceRepository extends BaseRepository {
   }
 
   async createService(
-    { name, name_ar, name_en, description, description_ar, description_en, price, category_id, is_vip_exclusive },
+    { name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id, is_vip_exclusive },
     db = null
   ) {
     return this._queryOne(
       `INSERT INTO services (
-        name, name_ar, name_en, description, description_ar, description_en, price, category_id, is_vip_exclusive
+        name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id, is_vip_exclusive
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         name,
         name_ar || null,
@@ -142,6 +136,7 @@ class ServiceRepository extends BaseRepository {
         description_ar || null,
         description_en || null,
         price,
+        service_kind || 'MEDICAL',
         category_id || null,
         Boolean(is_vip_exclusive),
       ],
@@ -151,7 +146,8 @@ class ServiceRepository extends BaseRepository {
 
   async getServiceById(id, db = null) {
     return this._queryOne(
-      `SELECT s.id, s.name, s.description, s.price, s.category_id,
+      `SELECT s.id, s.name, s.name_ar, s.name_en, s.description, s.description_ar, s.description_en,
+              s.price, s.service_kind, s.category_id,
               s.is_vip_exclusive, s.is_active, s.image_url, s.created_at, s.updated_at,
               c.name AS category_name, c.description AS category_description
        FROM services s LEFT JOIN service_categories c ON s.category_id = c.id
@@ -172,6 +168,7 @@ class ServiceRepository extends BaseRepository {
         'description_ar',
         'description_en',
         'price',
+        'service_kind',
         'category_id',
         'is_vip_exclusive',
         'is_active',
@@ -187,6 +184,21 @@ class ServiceRepository extends BaseRepository {
     );
   }
 
+  /** What a public visitor can order: active, non-VIP services grouped by kind and category, plus packages. */
+  async countPublicCatalog(db = null) {
+    const [services, packages] = await Promise.all([
+      this._query(
+        `SELECT service_kind, category_id, COUNT(*)::int AS count
+         FROM services
+         WHERE is_active = TRUE AND is_vip_exclusive = FALSE
+         GROUP BY service_kind, category_id`,
+        [], db
+      ),
+      this._query('SELECT COUNT(*)::int AS count FROM packages WHERE is_active = TRUE AND is_vip_exclusive = FALSE', [], db),
+    ]);
+    return { services: services.rows, packages: packages.rows[0].count };
+  }
+
   async getMediaInfo(id, db = null) {
     return this._queryOne(
       'SELECT id, name, image_url FROM services WHERE id = $1',
@@ -199,54 +211,6 @@ class ServiceRepository extends BaseRepository {
       'UPDATE services SET image_url = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
       [imageUrl, id], db
     );
-  }
-
-  // --- Ratings ---
-
-  async getDirectRating(patientId, serviceId, db = null) {
-    return this._queryOne(
-      `SELECT id FROM service_ratings
-       WHERE patient_id = $1 AND service_id = $2 LIMIT 1`,
-      [patientId, serviceId], db
-    );
-  }
-
-  async createDirectRating({ patientId, serviceId, rating, comment }, db = null) {
-    return this._queryOne(
-      `INSERT INTO service_ratings (patient_id, service_id, rating, comment, rating_type)
-       VALUES ($1, $2, $3, $4, 'SERVICE') RETURNING *`,
-      [patientId, serviceId, rating, comment || null], db
-    );
-  }
-
-  async getRatingsSummary(serviceId, db = null) {
-    return this._queryOne(
-      `SELECT COUNT(id)::int AS total_ratings,
-              COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS average_rating
-       FROM service_ratings
-       WHERE service_id = $1 AND rating_type = 'SERVICE'`,
-      [serviceId], db
-    );
-  }
-
-  async listRatings(serviceId, { limit, offset } = {}, db = null) {
-    const [countResult, result] = await Promise.all([
-      this._query(
-        `SELECT COUNT(*)::int AS total FROM service_ratings
-         WHERE service_id = $1 AND rating_type = 'SERVICE'`,
-        [serviceId], db
-      ),
-      this._query(
-        `SELECT sr.id, sr.patient_id, sr.rating, sr.comment, sr.created_at,
-                p.full_name AS patient_name
-         FROM service_ratings sr LEFT JOIN patients p ON p.id = sr.patient_id
-         WHERE sr.service_id = $1 AND sr.rating_type = 'SERVICE'
-         ORDER BY sr.created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [serviceId, limit, offset], db
-      ),
-    ]);
-    return { data: result.rows, total: countResult.rows[0]?.total || 0 };
   }
 }
 

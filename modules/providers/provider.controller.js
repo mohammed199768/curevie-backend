@@ -1,164 +1,159 @@
-const { logger, audit } = require('../../utils/logger');
-const { isBunnyConfigured, uploadToBunny, deleteFromBunny } = require('../../utils/bunny');
-const { paginate, paginationMeta } = require('../../utils/pagination'); // AUDIT-FIX: DRY — reuse shared pagination helpers for provider list responses
+const bcrypt = require('bcryptjs');
+const pool = require('../../config/db');
+const ProviderRepository = require('../../repositories/ProviderRepository');
+const AuthRepository = require('../../repositories/AuthRepository');
+const caseService = require('../cases/case.service');
+const { AppError } = require('../../middlewares/errorHandler');
+const { audit } = require('../../utils/logger');
+const { paginate, paginationMeta } = require('../../utils/pagination');
+const { uploadPublicMedia, deletePublicMedia, toPublicMediaUrl } = require('../../utils/storage');
 
-function createProviderController(providerService) {
-  async function createProvider(req, res) {
-    if (await providerService.emailExists(req.body.email)) {
-      return res.status(409).json({ message: 'Email already exists', code: 'EMAIL_EXISTS' });
-    }
+const providerRepo = new ProviderRepository(pool);
+const authRepo = new AuthRepository(pool);
 
-    const created = await providerService.createProvider(req.body);
+// Fields a provider may change on their own profile; everything else is admin-only.
+const SELF_EDITABLE_FIELDS = ['full_name', 'phone', 'is_available'];
 
-    audit('PROVIDER_CREATED', {
-      userId: req.user.id,
-      role: req.user.role,
-      targetId: created.id,
-      targetType: 'provider',
-      ip: req.ip,
-    });
-
-    return res.status(201).json(created);
-  }
-
-  async function listProviders(req, res) {
-    const { page, limit, search, type, is_available } = req.query;
-    const { page: currentPage, limit: currentLimit } = paginate(req.query); // AUDIT-FIX: DRY — normalize page/limit once for provider list responses
-    const { data, total } = await providerService.listProviders({
-      page, limit, search, type, is_available,
-    });
-
-    return res.json({
-      data,
-      pagination: paginationMeta(total, currentPage, currentLimit), // AUDIT-FIX: DRY — standardized list response shape via shared helper
-    });
-  }
-
-  async function updateProvider(req, res) {
-    const payload = { ...req.body };
-
-    if (req.user.role !== 'ADMIN' && Object.prototype.hasOwnProperty.call(payload, 'type')) {
-      delete payload.type;
-    }
-
-    const result = await providerService.updateProvider(req.params.id, payload);
-    if (result.noUpdates) {
-      return res.status(400).json({ message: 'No fields to update', code: 'NO_UPDATES' });
-    }
-    if (!result.row) {
-      return res.status(404).json({ message: 'Provider not found', code: 'PROVIDER_NOT_FOUND' });
-    }
-
-    audit('PROVIDER_UPDATED', {
-      userId: req.user.id,
-      role: req.user.role,
-      targetId: req.params.id,
-      targetType: 'provider',
-      ip: req.ip,
-      details: payload,
-    });
-
-    return res.json(result.row);
-  }
-
-  async function deleteProvider(req, res) {
-    const row = await providerService.deleteProvider(req.params.id);
-    if (!row) {
-      return res.status(404).json({ message: 'Provider not found', code: 'PROVIDER_NOT_FOUND' });
-    }
-
-    audit('PROVIDER_DELETED', {
-      userId: req.user.id,
-      role: req.user.role,
-      targetId: req.params.id,
-      targetType: 'provider',
-      ip: req.ip,
-    });
-
-    return res.json({ message: 'Provider deleted successfully', provider: row });
-  }
-
-  async function getProviderRatings(req, res) {
-    const { page: currentPage, limit: currentLimit } = paginate(req.query); // AUDIT-FIX: DRY — shared page parsing and offset calculation for rating lists
-
-    const provider = await providerService.getProviderById(req.params.id);
-    if (!provider) {
-      return res.status(404).json({ message: 'Provider not found', code: 'PROVIDER_NOT_FOUND' });
-    }
-
-    return res.json({
-      provider,
-      summary: {
-        total: 0,
-        average: 0,
-        total_ratings: 0,
-        average_rating: 0,
-      },
-      data: [],
-      pagination: paginationMeta(0, currentPage, currentLimit), // AUDIT-FIX: DRY — standardized list response shape via shared helper
-    });
-  }
-
-  async function uploadAvatar(req, res) {
-    if (!req.file) {
-      return res.status(400).json({ message: 'Image file is required', code: 'NO_FILE' });
-    }
-
-    if (!isBunnyConfigured()) {
-      return res.status(503).json({ message: 'Media service not configured', code: 'MEDIA_NOT_CONFIGURED' });
-    }
-
-    const provider = await providerService.getProviderAvatarInfo(req.params.id);
-    if (!provider) {
-      return res.status(404).json({ message: 'Provider not found', code: 'PROVIDER_NOT_FOUND' });
-    }
-
-    const avatarUrl = await uploadToBunny(req.file.buffer, req.file.originalname, 'providers/avatars');
-    if (!avatarUrl) {
-      return res.status(502).json({ message: 'Failed to upload media', code: 'MEDIA_UPLOAD_FAILED' });
-    }
-
-    const updated = await providerService.updateProviderAvatar(req.params.id, avatarUrl);
-
-    if (provider.avatar_url) {
-      try {
-        const deleted = await deleteFromBunny(provider.avatar_url);
-        if (deleted === false) {
-          logger.warn('Failed to delete previous provider avatar from Bunny', {
-            providerId: req.params.id,
-            oldUrl: provider.avatar_url,
-            newUrl: avatarUrl,
-          });
-        }
-      } catch (err) {
-        logger.warn('Failed to delete previous provider avatar from Bunny', {
-          providerId: req.params.id,
-          oldUrl: provider.avatar_url,
-          newUrl: avatarUrl,
-          error: err.message,
-        });
-      }
-    }
-
-    audit('PROVIDER_AVATAR_UPDATED', {
-      userId: req.user.id,
-      role: req.user.role,
-      targetId: req.params.id,
-      targetType: 'provider',
-      ip: req.ip,
-    });
-
-    return res.json(updated);
-  }
-
+function present(provider) {
+  if (!provider) return provider;
   return {
-    createProvider,
-    listProviders,
-    updateProvider,
-    deleteProvider,
-    getProviderRatings,
-    uploadAvatar,
+    ...provider,
+    avatar_url: toPublicMediaUrl(provider.avatar_url),
+    average_rating: Number(provider.average_rating || 0),
   };
 }
 
-module.exports = { createProviderController };
+function auditProvider(req, action, details) {
+  audit(action, {
+    userId: req.user.id,
+    role: req.user.role,
+    targetId: req.params.id,
+    targetType: 'provider',
+    ip: req.ip,
+    details,
+  });
+}
+
+async function assertAreasExist(areaIds) {
+  if (areaIds.length && (await providerRepo.countKnownAreas(areaIds)) !== areaIds.length) {
+    throw new AppError('One or more areas do not exist', 400, 'INVALID_AREA');
+  }
+}
+
+async function loadProvider(id) {
+  const provider = await providerRepo.getById(id);
+  if (!provider) throw new AppError('Provider not found', 404, 'PROVIDER_NOT_FOUND');
+  return provider;
+}
+
+async function createProvider(req, res) {
+  const { area_ids: areaIds = [], password, ...profile } = req.body;
+  if (await providerRepo.emailExistsGlobal(profile.email)) {
+    return res.status(409).json({ message: 'Email already exists', code: 'EMAIL_EXISTS' });
+  }
+  await assertAreasExist(areaIds);
+
+  const created = await providerRepo.withTransaction(async (client) => {
+    const row = await providerRepo.createProvider({ ...profile, hashedPassword: await bcrypt.hash(password, 12) }, client);
+    await providerRepo.replaceAreas(row.id, areaIds, client);
+    return row;
+  });
+
+  audit('PROVIDER_CREATED', { userId: req.user.id, role: req.user.role, targetId: created.id, targetType: 'provider', ip: req.ip });
+  return res.status(201).json(present(await providerRepo.getById(created.id)));
+}
+
+async function listProviders(req, res) {
+  const { page, limit, offset } = paginate(req.query);
+  const { data, total } = await providerRepo.list(req.query, { limit, offset });
+  return res.json({ data: data.map(present), pagination: paginationMeta(total, page, limit) });
+}
+
+async function getProvider(req, res) {
+  return res.json(present(await loadProvider(req.params.id)));
+}
+
+async function getMe(req, res) {
+  return res.json(present(await loadProvider(req.user.id)));
+}
+
+async function updateProvider(req, res) {
+  const isAdmin = req.user.role === 'ADMIN';
+  const payload = { ...req.body };
+
+  if (!isAdmin) {
+    const forbidden = Object.keys(payload).filter((key) => !SELF_EDITABLE_FIELDS.includes(key));
+    if (forbidden.length) {
+      throw new AppError(`Only an admin can change: ${forbidden.join(', ')}`, 403, 'FORBIDDEN');
+    }
+  }
+
+  await loadProvider(req.params.id);
+  const { area_ids: areaIds, ...fields } = payload;
+  if (areaIds) await assertAreasExist(areaIds);
+
+  await providerRepo.withTransaction(async (client) => {
+    if (Object.keys(fields).length) await providerRepo.updateProvider(req.params.id, fields, client);
+    if (areaIds) await providerRepo.replaceAreas(req.params.id, areaIds, client);
+  });
+
+  // Disabling an account ends its sessions immediately.
+  if (fields.is_active === false) await authRepo.revokeAllUserTokens(req.params.id, 'PROVIDER');
+
+  auditProvider(req, 'PROVIDER_UPDATED', Object.keys(payload));
+  return res.json(present(await providerRepo.getById(req.params.id)));
+}
+
+async function setAvailability(req, res) {
+  await providerRepo.updateProvider(req.user.id, { is_available: req.body.is_available });
+  return res.json(present(await loadProvider(req.user.id)));
+}
+
+async function deleteProvider(req, res) {
+  await loadProvider(req.params.id);
+  const openJobs = await providerRepo.countOpenJobs(req.params.id);
+  if (openJobs > 0) {
+    throw new AppError(
+      `Provider still has ${openJobs} open job(s). Reassign them before deleting the account.`,
+      409,
+      'PROVIDER_HAS_OPEN_JOBS'
+    );
+  }
+
+  const row = await providerRepo.softDelete(req.params.id);
+  await authRepo.revokeAllUserTokens(req.params.id, 'PROVIDER');
+  auditProvider(req, 'PROVIDER_DELETED');
+  return res.json({ message: 'Provider deleted successfully', provider: row });
+}
+
+async function getProviderRatings(req, res) {
+  await loadProvider(req.params.id);
+  const { page, limit } = paginate(req.query);
+  return res.json(await caseService.getProviderRatings(req.params.id, { page, limit }));
+}
+
+async function uploadAvatar(req, res) {
+  if (!req.file) throw new AppError('Image file is required', 400, 'NO_FILE');
+  const provider = await providerRepo.getAvatarInfo(req.params.id);
+  if (!provider) throw new AppError('Provider not found', 404, 'PROVIDER_NOT_FOUND');
+
+  const avatarUrl = await uploadPublicMedia(req.file.buffer, { folder: 'providers/avatars', mimeType: req.file.mimetype });
+  if (!avatarUrl) throw new AppError('Media service not configured', 503, 'MEDIA_NOT_CONFIGURED');
+
+  await providerRepo.updateAvatar(req.params.id, avatarUrl);
+  if (provider.avatar_url) await deletePublicMedia(provider.avatar_url);
+  auditProvider(req, 'PROVIDER_AVATAR_UPDATED');
+  return res.json(present(await providerRepo.getById(req.params.id)));
+}
+
+module.exports = {
+  createProvider,
+  listProviders,
+  getProvider,
+  getMe,
+  updateProvider,
+  setAvailability,
+  deleteProvider,
+  getProviderRatings,
+  uploadAvatar,
+};

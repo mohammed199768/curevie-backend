@@ -1,88 +1,61 @@
 const express = require('express');
-const {
-  authenticate,
-  adminOnly,
-  staffOnly,
-  selfOrAdmin,
-} = require('../../middlewares/auth');
+const Joi = require('joi');
+const { authenticate, adminOnly, providerOnly, selfOrAdmin } = require('../../middlewares/auth');
 const { apiLimiter, readLimiter } = require('../../middlewares/rateLimiter');
 const validate = require('../../middlewares/validate');
-// AUDIT-FIX: S2 — import magic bytes validator alongside upload middleware
-const { uploadSingleImage, validateImageContents } = require('../../utils/upload');
+const { uploadImage } = require('../../utils/upload');
 const {
   createProviderSchema,
   updateProviderSchema,
-  paginationSchema,
+  providerAvailabilitySchema,
+  providerListQuerySchema,
   providerRatingsQuerySchema,
 } = require('../../utils/schemas');
 const asyncHandler = require('../../utils/asyncHandler');
-
-// ── Composition Root ──────────────────────────────────────────────────────────
-const pool = require('../../config/db');
-const ProviderRepository = require('../../repositories/ProviderRepository');
-const { createProviderService } = require('./provider.service');
-const { createProviderController } = require('./provider.controller');
-
-const providerRepo = new ProviderRepository(pool);
-const providerService = createProviderService(providerRepo);
-const providerController = createProviderController(providerService);
-// ─────────────────────────────────────────────────────────────────────────────
+const controller = require('./provider.controller');
 
 const router = express.Router();
+const idParams = Joi.object({ id: Joi.string().uuid().required() });
 
-router.post(
-  '/',
-  authenticate,
-  adminOnly,
+router.use(authenticate);
+
+router.post('/', adminOnly, apiLimiter, validate(createProviderSchema), asyncHandler(controller.createProvider));
+router.get('/', adminOnly, readLimiter, validate(providerListQuerySchema, 'query'), asyncHandler(controller.listProviders));
+
+router.get('/me', providerOnly, readLimiter, asyncHandler(controller.getMe));
+router.put(
+  '/me/availability',
+  providerOnly,
   apiLimiter,
-  validate(createProviderSchema),
-  asyncHandler(providerController.createProvider)
+  validate(providerAvailabilitySchema),
+  asyncHandler(controller.setAvailability)
 );
 
-router.get(
-  '/',
-  authenticate,
-  adminOnly,
-  readLimiter,
-  validate(paginationSchema, 'query'),
-  asyncHandler(providerController.listProviders)
+router.get('/:id', readLimiter, validate(idParams, 'params'), selfOrAdmin, asyncHandler(controller.getProvider));
+router.put(
+  '/:id',
+  apiLimiter,
+  validate(idParams, 'params'),
+  selfOrAdmin,
+  validate(updateProviderSchema),
+  asyncHandler(controller.updateProvider)
 );
-
 router.put(
   '/:id/avatar',
-  authenticate,
+  apiLimiter,
+  validate(idParams, 'params'),
   selfOrAdmin,
-  apiLimiter,
-  uploadSingleImage,
-  // AUDIT-FIX: S2 — magic bytes check runs after multer, before controller
-  validateImageContents,
-  asyncHandler(providerController.uploadAvatar)
+  ...uploadImage,
+  asyncHandler(controller.uploadAvatar)
 );
-
-router.put(
-  '/:id',
-  authenticate,
-  selfOrAdmin,
-  apiLimiter,
-  validate(updateProviderSchema),
-  asyncHandler(providerController.updateProvider)
-);
-
-router.delete(
-  '/:id',
-  authenticate,
-  adminOnly,
-  apiLimiter,
-  asyncHandler(providerController.deleteProvider)
-);
-
+router.delete('/:id', adminOnly, apiLimiter, validate(idParams, 'params'), asyncHandler(controller.deleteProvider));
 router.get(
   '/:id/ratings',
-  authenticate,
-  staffOnly,
   readLimiter,
+  validate(idParams, 'params'),
+  selfOrAdmin,
   validate(providerRatingsQuerySchema, 'query'),
-  asyncHandler(providerController.getProviderRatings)
+  asyncHandler(controller.getProviderRatings)
 );
 
 module.exports = router;

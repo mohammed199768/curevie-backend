@@ -1,146 +1,63 @@
 const express = require('express');
 const Joi = require('joi');
-const { authenticate, guestOrAuthenticated, adminOnly, staffOnly } = require('../../middlewares/auth');
+const { authenticate, guestOrAuthenticated, adminOnly } = require('../../middlewares/auth');
 const { apiLimiter, readLimiter } = require('../../middlewares/rateLimiter');
 const validate = require('../../middlewares/validate');
-// AUDIT-FIX: S2 — import magic bytes validator alongside upload middleware
-const { uploadSingleImage, validateImageContents } = require('../../utils/upload');
-const {
-  categorySchema,
-  createServiceSchema,
-  updateServiceSchema,
-  paginationSchema,
-  rateEntitySchema,
-} = require('../../utils/schemas');
+const { uploadImage } = require('../../utils/upload');
+const { categorySchema, createServiceSchema, updateServiceSchema, paginationSchema } = require('../../utils/schemas');
 const asyncHandler = require('../../utils/asyncHandler');
-
-// ── Composition Root ──────────────────────────────────────────────────────────
-const pool = require('../../config/db');
-const ServiceRepository = require('../../repositories/ServiceRepository');
-const { createServiceService } = require('./service.service');
-const { createServiceController } = require('./service.controller');
-
-const serviceRepo = new ServiceRepository(pool);
-const serviceService = createServiceService(serviceRepo);
-const serviceController = createServiceController(serviceService);
-// ─────────────────────────────────────────────────────────────────────────────
+const controller = require('./service.controller');
 
 const router = express.Router();
 
-const categoryQuerySchema = paginationSchema;
+const idParams = Joi.object({ id: Joi.string().uuid().required() });
 const serviceQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(10),
   search: Joi.string().max(100).trim().allow('', null),
-  category_id: Joi.string().uuid({ version: 'uuidv4' }),
+  category_id: Joi.string().uuid(),
   is_active: Joi.boolean(),
   is_vip_exclusive: Joi.boolean(),
-  service_kind: Joi.string().valid('MEDICAL', 'RADIOLOGY'),
+  service_kind: Joi.string().valid('MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB'),
 });
-const ratingsQuerySchema = paginationSchema.fork(['limit'], (schema) => schema.default(20));
 
-router.get(
-  '/categories',
-  authenticate,
-  readLimiter,
-  validate(categoryQuerySchema, 'query'),
-  asyncHandler(serviceController.listCategories)
-);
+// Public catalog reads.
+router.get('/categories', guestOrAuthenticated, readLimiter, validate(paginationSchema, 'query'), asyncHandler(controller.listCategories));
+router.get('/counts', readLimiter, asyncHandler(controller.getPublicCounts));
+router.get('/', guestOrAuthenticated, readLimiter, validate(serviceQuerySchema, 'query'), asyncHandler(controller.listServices));
+router.get('/:id', guestOrAuthenticated, readLimiter, validate(idParams, 'params'), asyncHandler(controller.getServiceById));
 
-router.post(
-  '/categories',
-  authenticate,
-  adminOnly,
-  apiLimiter,
-  validate(categorySchema),
-  asyncHandler(serviceController.createCategory)
-);
-
+// Admin catalog management.
+router.post('/categories', authenticate, adminOnly, apiLimiter, validate(categorySchema), asyncHandler(controller.createCategory));
 router.put(
   '/categories/:id',
   authenticate,
   adminOnly,
   apiLimiter,
+  validate(idParams, 'params'),
   validate(categorySchema),
-  asyncHandler(serviceController.updateCategory)
+  asyncHandler(controller.updateCategory)
 );
-
-router.delete(
-  '/categories/:id',
-  authenticate,
-  adminOnly,
-  apiLimiter,
-  asyncHandler(serviceController.deleteCategory)
-);
-
-router.get(
-  '/',
-  guestOrAuthenticated,
-  readLimiter,
-  validate(serviceQuerySchema, 'query'),
-  asyncHandler(serviceController.listServices)
-);
-
-router.post(
-  '/',
-  authenticate,
-  adminOnly,
-  apiLimiter,
-  validate(createServiceSchema),
-  asyncHandler(serviceController.createService)
-);
-
-router.post(
-  '/:id/rate',
-  authenticate,
-  apiLimiter,
-  validate(rateEntitySchema),
-  asyncHandler(serviceController.rateService)
-);
-
-router.get(
-  '/:id/ratings',
-  authenticate,
-  staffOnly,
-  readLimiter,
-  validate(ratingsQuerySchema, 'query'),
-  asyncHandler(serviceController.getServiceRatings)
-);
-
-router.get(
-  '/:id',
-  authenticate,
-  staffOnly,
-  readLimiter,
-  asyncHandler(serviceController.getServiceById)
-);
-
+router.delete('/categories/:id', authenticate, adminOnly, apiLimiter, validate(idParams, 'params'), asyncHandler(controller.deleteCategory));
+router.post('/', authenticate, adminOnly, apiLimiter, validate(createServiceSchema), asyncHandler(controller.createService));
 router.put(
   '/:id/image',
   authenticate,
   adminOnly,
   apiLimiter,
-  uploadSingleImage,
-  // AUDIT-FIX: S2 — magic bytes check runs after multer, before controller
-  validateImageContents,
-  asyncHandler(serviceController.uploadServiceImage)
+  validate(idParams, 'params'),
+  ...uploadImage,
+  asyncHandler(controller.uploadServiceImage)
 );
-
 router.put(
   '/:id',
   authenticate,
   adminOnly,
   apiLimiter,
+  validate(idParams, 'params'),
   validate(updateServiceSchema),
-  asyncHandler(serviceController.updateService)
+  asyncHandler(controller.updateService)
 );
-
-router.delete(
-  '/:id',
-  authenticate,
-  adminOnly,
-  apiLimiter,
-  asyncHandler(serviceController.deactivateService)
-);
+router.delete('/:id', authenticate, adminOnly, apiLimiter, validate(idParams, 'params'), asyncHandler(controller.deactivateService));
 
 module.exports = router;

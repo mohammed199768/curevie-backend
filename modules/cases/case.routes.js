@@ -4,237 +4,230 @@ const {
   guestOrAuthenticated,
   adminOnly,
   providerOnly,
-  staffOnly,
   patientOnly,
 } = require('../../middlewares/auth');
-const multer = require('multer');
-const pool = require('../../config/db');
+const { apiLimiter, readLimiter, guestRequestLimiter, trackLimiter } = require('../../middlewares/rateLimiter');
+const validate = require('../../middlewares/validate');
 const asyncHandler = require('../../utils/asyncHandler');
-const ChatRepository = require('../../repositories/ChatRepository');
-const CaseService = require('./case.service');
-const caseController = require('./case.controller');
-const reportRoutes  = require('./case-report.routes');
+const caseService = require('./case.service');
+const schemas = require('./case.schemas');
+const chatRoutes = require('./case-chat.routes');
+const fileRoutes = require('./case-files.routes');
 const invoiceRoutes = require('./case-invoice.routes');
-const { emitToUser } = require('../../utils/socket');
+const reportRoutes = require('./case-report.routes');
 
 const router = express.Router();
-const chatRepo = new ChatRepository(pool);
-const caseService = new CaseService(pool);
-const upload = multer({ storage: multer.memoryStorage() });
 
-router.get('/health', (req, res) => {
-  res.json({ status: 'cases module ok' });
-});
+const patientOrAdmin = (req, res, next) => {
+  if (['PATIENT', 'ADMIN'].includes(req.user.role)) return next();
+  return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
+};
 
-router.post('/public', guestOrAuthenticated, asyncHandler(async (req, res) => {
-  const { guest_name, guest_phone, guest_address, services, notes } = req.body || {};
+// ------------------------------------------------------------------ ordering
 
-  if (!guest_name || !guest_phone || !services?.length) {
-    return res.status(400).json({ error: 'guest_name, guest_phone, and services are required' });
-  }
-
-  const result = await caseService.createGuestCase({
-    guest_name,
-    guest_phone,
-    guest_address,
-    services,
-    notes,
-  });
-
-  return res.status(201).json({ message: 'Case created', data: result });
-}));
-
-router.post('/', authenticate, patientOnly, caseController.createCase);
-router.get('/', authenticate, caseController.listCases);
-router.get('/chat/unread-count', authenticate, asyncHandler(async (req, res) => {
-  if (!['PATIENT', 'PROVIDER'].includes(req.user.role)) {
-    return res.json({ unread_count: 0 });
-  }
-
-  const unreadCount = await chatRepo.countUnreadByParticipant(req.user.id, req.user.role);
-  return res.json({ unread_count: Number(unreadCount || 0) });
-}));
-router.get('/chat/rooms/:room_id/messages', authenticate, asyncHandler(async (req, res) => {
-  const room = await chatRepo.findRoomById(req.params.room_id);
-
-  if (!room) {
-    return res.status(404).json({ message: 'Room not found', code: 'NOT_FOUND' });
-  }
-
-  const canAccess =
-    req.user.role === 'ADMIN' ||
-    (req.user.role === 'PATIENT' && room.patient_id === req.user.id) ||
-    (req.user.role === 'PROVIDER' && room.provider_id === req.user.id);
-
-  if (!canAccess) {
-    return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
-  }
-
-  const messages = await chatRepo.getMessages(room.id, {
-    limit: req.query.limit || 50,
-    before: req.query.before || null,
-  });
-  const markedMessages = await chatRepo.markAsRead(room.id, req.user.id);
-
-  if (markedMessages.length) {
-    const unreadCount = await chatRepo.countUnreadByParticipant(req.user.id, req.user.role);
-    emitToUser(req.user.id, 'chat_unread_updated', {
-      source: 'case_room',
-      room_id: room.id,
-      case_id: room.case_id,
-      unread_count: Number(unreadCount || 0),
-    });
-  }
-
-  return res.json({ data: messages });
-}));
-router.get('/:id', authenticate, caseController.getCaseById);
+// Guest order (or a logged-in patient using the public form).
 router.post(
-  '/:id/services/:serviceId/files',
-  authenticate,
-  providerOnly,
-  upload.single('file'),
+  '/public',
+  guestOrAuthenticated,
+  guestRequestLimiter,
+  validate(schemas.createGuestCaseSchema),
   asyncHandler(async (req, res) => {
-    const { caseId, serviceId } = { caseId: req.params.id, serviceId: req.params.serviceId };
-    const file = req.file;
-    const is_sick_leave = req.body.is_sick_leave === 'true';
-
-    if (!file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const { logger } = require('../../utils/logger');
-    const path = require('path');
-    const fs = require('fs');
-    const uploadDir = '/app/uploads/case-files';
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-    const fileName = `${Date.now()}-${file.originalname}`;
-    const filePath = path.join(uploadDir, fileName);
-    fs.writeFileSync(filePath, file.buffer);
-    const fileUrl = `/uploads/case-files/${fileName}`;
-
-    const fileType = file.mimetype === 'application/pdf' ? 'PDF' : 'IMAGE';
-
-    const { rows } = await pool.query(
-      `INSERT INTO case_provider_files 
-        (case_service_id, file_url, file_type, is_sick_leave, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [serviceId, fileUrl, fileType, is_sick_leave, req.user.id]
-    );
-
-    return res.status(201).json({ data: rows[0] });
+    const user = req.user?.role === 'PATIENT' ? req.user : null;
+    const result = await caseService.createCase(user, req.body);
+    return res.status(201).json({ message: 'Case created', data: result });
   })
 );
-router.put(
-  '/:id/services/:serviceId/start',
+
+router.post(
+  '/',
   authenticate,
-  providerOnly,
+  patientOnly,
+  apiLimiter,
+  validate(schemas.createCaseSchema),
   asyncHandler(async (req, res) => {
-    const { rows } = await pool.query(
-      `UPDATE case_services 
-       SET status = 'IN_PROGRESS', updated_at = NOW()
-       WHERE id = $1 AND case_id = $2 AND provider_id = $3
-       RETURNING *`,
-      [req.params.serviceId, req.params.id, req.user.id]
-    );
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Service not found or access denied' });
-    }
-
-    await pool.query(
-      `UPDATE cases SET status = 'IN_PROGRESS', updated_at = NOW()
-       WHERE id = $1 AND status NOT IN ('COMPLETED', 'CLOSED', 'CANCELLED')`,
-      [req.params.id]
-    );
-
-    return res.json({ data: rows[0] });
+    const result = await caseService.createCase(req.user, req.body);
+    return res.status(201).json({ message: 'Case created', data: result });
   })
 );
-router.put(
-  '/:id/services/:serviceId/complete',
-  authenticate,
-  providerOnly,
+
+router.get(
+  '/track/:token',
+  trackLimiter,
+  validate(schemas.trackingParams, 'params'),
   asyncHandler(async (req, res) => {
-    const { rows } = await pool.query(
-      `UPDATE case_services 
-       SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND case_id = $2 AND provider_id = $3
-       RETURNING *`,
-      [req.params.serviceId, req.params.id, req.user.id]
-    );
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Service not found or access denied' });
-    }
-
-    const { rows: allServices } = await pool.query(
-      `SELECT status FROM case_services WHERE case_id = $1`,
-      [req.params.id]
-    );
-    const allDone = allServices.every((s) =>
-      s.status === 'COMPLETED' || s.status === 'CANCELLED'
-    );
-    if (allDone) {
-      await pool.query(
-        `UPDATE cases SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`,
-        [req.params.id]
-      );
-    }
-
-    return res.json({ data: rows[0] });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ data: await caseService.trackCase(req.params.token) });
   })
 );
-router.post('/:id/assign-team', authenticate, adminOnly, caseController.assignTeam);
-router.post('/:id/appointments', authenticate, adminOnly, caseController.addAppointment);
-router.post('/:id/close', authenticate, adminOnly, caseController.closeCase);
-router.get('/:id/chat-rooms', authenticate, asyncHandler(async (req, res) => {
-  const caseResult = await pool.query(
-    'SELECT id, patient_id FROM cases WHERE id = $1 LIMIT 1',
-    [req.params.id]
-  );
-  const currentCase = caseResult.rows[0];
 
-  if (!currentCase) {
-    return res.status(404).json({ message: 'Case not found', code: 'NOT_FOUND' });
-  }
+router.post(
+  '/claim',
+  authenticate,
+  patientOnly,
+  apiLimiter,
+  validate(schemas.claimSchema),
+  asyncHandler(async (req, res) => {
+    const result = await caseService.claimCase(req.user, req.body.tracking_token);
+    return res.json({ message: 'Order added to your account', data: result });
+  })
+);
 
-  if (req.user.role === 'PATIENT' && currentCase.patient_id !== req.user.id) {
-    return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
-  }
+router.get(
+  '/',
+  authenticate,
+  readLimiter,
+  validate(schemas.listCasesQuerySchema, 'query'),
+  asyncHandler(async (req, res) => res.json({ data: await caseService.listCases(req.user, req.query) }))
+);
 
-  let rooms = [];
-
-  if (req.user.role === 'PATIENT') {
-    const patientRooms = await chatRepo.findRoomsByPatient(req.user.id);
-    rooms = patientRooms.filter((room) => room.case_id === req.params.id);
-  } else if (req.user.role === 'ADMIN') {
-    rooms = await chatRepo.findRoomsByCase(req.params.id);
-  } else if (req.user.role === 'PROVIDER') {
-    const caseRooms = await chatRepo.findRoomsByCase(req.params.id);
-    rooms = caseRooms.filter((room) => room.provider_id === req.user.id);
-  }
-
-  const roomsWithMeta = await Promise.all(
-    rooms.map(async (room) => {
-      const latestMessage = await chatRepo.getLatestMessage(room.id);
-      const unreadCount = ['PATIENT', 'PROVIDER'].includes(req.user.role)
-        ? await chatRepo.countUnread(room.id, req.user.id)
-        : 0;
-
-      return {
-        ...room,
-        unread_count: Number(unreadCount || 0),
-        last_message_at: latestMessage?.created_at || null,
-        last_message_preview: latestMessage?.content || latestMessage?.file_url || null,
-        last_message_sender_role: latestMessage?.sender_role || null,
-      };
-    })
-  );
-
-  return res.json({ data: roomsWithMeta });
-}));
-
-router.use('/', reportRoutes);
+// Sub-routers are mounted before "/:id" so "/chat/..." and "/invoices" are not read as case ids.
+router.use('/chat', chatRoutes);
 router.use('/', invoiceRoutes);
+router.use('/', fileRoutes);
+router.use('/', reportRoutes);
+
+router.get(
+  '/:id',
+  authenticate,
+  readLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  asyncHandler(async (req, res) => res.json({ data: await caseService.getCaseDetail(req.params.id, req.user) }))
+);
+
+// ------------------------------------------------------------------ admin
+
+router.get(
+  '/:id/services/:serviceId/candidates',
+  authenticate,
+  adminOnly,
+  readLimiter,
+  validate(schemas.caseServiceParams, 'params'),
+  validate(schemas.candidatesQuerySchema, 'query'),
+  asyncHandler(async (req, res) => res.json({
+    data: await caseService.getCandidates(req.params.id, req.params.serviceId, { includeAll: req.query.include_all }),
+  }))
+);
+
+router.post(
+  '/:id/assign-team',
+  authenticate,
+  adminOnly,
+  apiLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  validate(schemas.assignTeamSchema),
+  asyncHandler(async (req, res) => res.json({
+    message: 'Team assigned',
+    data: await caseService.assignTeam(req.params.id, req.body, req.user),
+  }))
+);
+
+router.post(
+  '/:id/appointments',
+  authenticate,
+  adminOnly,
+  apiLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  validate(schemas.appointmentSchema),
+  asyncHandler(async (req, res) => res.status(201).json({
+    message: 'Appointment added',
+    data: await caseService.addAppointment(req.params.id, req.user, req.body),
+  }))
+);
+
+router.post(
+  '/:id/services/:serviceId/cancel',
+  authenticate,
+  adminOnly,
+  apiLimiter,
+  validate(schemas.caseServiceParams, 'params'),
+  validate(schemas.reasonSchema),
+  asyncHandler(async (req, res) => res.json({
+    message: 'Service cancelled',
+    data: await caseService.cancelService(req.params.id, req.params.serviceId, req.user, req.body.reason),
+  }))
+);
+
+router.post(
+  '/:id/close',
+  authenticate,
+  adminOnly,
+  apiLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  validate(schemas.closeCaseSchema),
+  asyncHandler(async (req, res) => res.json({
+    message: 'Case closed',
+    data: await caseService.closeCase(req.params.id, req.user, req.body.notes),
+  }))
+);
+
+// Patient (before work starts) or admin.
+router.post(
+  '/:id/cancel',
+  authenticate,
+  patientOrAdmin,
+  apiLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  validate(schemas.reasonSchema),
+  asyncHandler(async (req, res) => res.json({
+    message: 'Case cancelled',
+    data: await caseService.cancelCase(req.params.id, req.user, req.body.reason),
+  }))
+);
+
+// ------------------------------------------------------------------ provider workflow
+
+for (const action of ['accept', 'start', 'complete']) {
+  router.put(
+    `/:id/services/:serviceId/${action}`,
+    authenticate,
+    providerOnly,
+    apiLimiter,
+    validate(schemas.caseServiceParams, 'params'),
+    asyncHandler(async (req, res) => res.json({
+      data: await caseService.providerTransition(req.params.id, req.params.serviceId, req.user, action),
+    }))
+  );
+}
+
+router.put(
+  '/:id/services/:serviceId/reject',
+  authenticate,
+  providerOnly,
+  apiLimiter,
+  validate(schemas.caseServiceParams, 'params'),
+  validate(schemas.rejectSchema),
+  asyncHandler(async (req, res) => res.json({
+    data: await caseService.providerTransition(req.params.id, req.params.serviceId, req.user, 'reject', {
+      reason: req.body.reason,
+    }),
+  }))
+);
+
+// ------------------------------------------------------------------ patient
+
+router.post(
+  '/:id/services/:serviceId/rate',
+  authenticate,
+  patientOnly,
+  apiLimiter,
+  validate(schemas.caseServiceParams, 'params'),
+  validate(schemas.rateSchema),
+  asyncHandler(async (req, res) => res.status(201).json({
+    message: 'Thank you for your rating',
+    data: await caseService.rateService(req.params.id, req.params.serviceId, req.user, req.body),
+  }))
+);
+
+router.get(
+  '/:id/chat-rooms',
+  authenticate,
+  readLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  asyncHandler(async (req, res) => {
+    await caseService.loadAccessibleCase(req.params.id, req.user);
+    const rooms = await caseService.chatRepo.listRoomsForUser(req.user, { caseId: req.params.id });
+    return res.json({ data: rooms });
+  })
+);
 
 module.exports = router;

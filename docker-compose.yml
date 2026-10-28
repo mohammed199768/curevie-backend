@@ -45,15 +45,16 @@ services:
     env_file: .env
     environment:
       NODE_ENV: production
+      # Inside compose the database is the "postgres" service; an empty DATABASE_URL makes
+      # config/db.js use DB_* below even when .env still holds a local connection string.
+      DATABASE_URL: ""
       DB_HOST: postgres
       DB_PORT: 5432
       REDIS_URL: redis://redis:6379
       DB_SSL: "false"
     volumes:
       - uploads_data:/app/uploads
-      - /usr/share/fonts/truetype/noto:/usr/share/fonts/truetype/noto:ro
       - logs_data:/app/logs
-      - assets_data:/app/assets
     networks: [curevie_net]
     depends_on:
       postgres:
@@ -89,7 +90,6 @@ volumes:
   redis_data:
   uploads_data:
   logs_data:
-  assets_data:
   nginx_logs:
 
 networks:

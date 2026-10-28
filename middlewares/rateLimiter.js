@@ -15,12 +15,9 @@ function normalizeRole(value) {
   return normalized || 'UNKNOWN';
 }
 
+// req.ip honours "trust proxy" (one hop: our nginx). Reading X-Forwarded-For directly would let
+// clients pick their own rate-limit key by sending a forged header.
 function getIpAddress(req) {
-  const forwardedFor = req.headers?.['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
-  }
-
   return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
@@ -81,6 +78,21 @@ const loginLimiter = createLimiter({
       normalizeValue(req.body?.email)
     ),
   message: { message: 'Too many attempts. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    onLimitReached(req, res, options);
+    res.status(429).json(options.message);
+  },
+});
+
+// Per-account cap independent of IP, against distributed password guessing.
+const loginAccountLimiter = createLimiter({
+  prefix: 'auth-login-account',
+  windowMs: 60 * 60 * 1000,
+  max: isDevelopment ? 500 : 20,
+  keyGenerator: (req) => buildLimiterKey(normalizeRole(req.body?.role), normalizeValue(req.body?.email)),
+  message: { message: 'Too many attempts for this account. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res, next, options) => {
@@ -182,6 +194,20 @@ const readLimiter = createLimiter({
   legacyHeaders: false,
 });
 
+const trackLimiter = createLimiter({
+  prefix: 'track',
+  windowMs: 10 * 60 * 1000,
+  max: isDevelopment ? 1000 : 60,
+  keyGenerator: (req) => getIpAddress(req),
+  message: { message: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    onLimitReached(req, res, options);
+    res.status(429).json(options.message);
+  },
+});
+
 const guestRequestLimiter = createLimiter({
   prefix: 'guest',
   windowMs: 60 * 60 * 1000,
@@ -198,6 +224,7 @@ const guestRequestLimiter = createLimiter({
 module.exports = {
   authLimiter: loginLimiter,
   loginLimiter,
+  loginAccountLimiter,
   registerLimiter,
   refreshLimiter,
   logoutLimiter,
@@ -205,4 +232,5 @@ module.exports = {
   apiLimiter,
   readLimiter,
   guestRequestLimiter,
+  trackLimiter,
 };

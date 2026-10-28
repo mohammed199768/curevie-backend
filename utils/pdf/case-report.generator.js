@@ -1,16 +1,10 @@
-const fsPromises = require('fs/promises');
-const path = require('path');
-const { randomUUID } = require('crypto');
-const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const pool = require('../../config/db');
 const { logger } = require('../logger');
-const { generateSignedUrl, isBunnyConfigured } = require('../bunny');
-const { appendAttachedProviderPdfs, resolveLocalPdfPath } = require('./attachments');
-const { addWatermark } = require('./conversion');
 const { renderPdfFromHtml, fileToDataUri } = require('./html-renderer');
-const { readStoredPdfBuffer, storeGeneratedPdf } = require('./storage');
-const { LOGO_PATH, TEMP_DIR } = require('./shared');
+const { addWatermarkToBuffer } = require('./watermark');
+const { LOGO_PATH, bufferToDataUri } = require('./shared');
+const { readStoredFile, savePrivateFile, mimeTypeForKey } = require('../storage');
 
 function escapeHtml(value) {
   return String(value ?? '-')
@@ -62,91 +56,23 @@ function formatDisplayValue(value, fallback = '-') {
   return normalized || fallback;
 }
 
-function getFileExtension(fileUrl, fallbackExtension = '') {
-  const normalizedFallback = String(fallbackExtension || '').trim();
-  const safeFallback = normalizedFallback
-    ? (normalizedFallback.startsWith('.') ? normalizedFallback : `.${normalizedFallback}`)
-    : '';
-
-  const rawValue = String(fileUrl || '').trim();
-  if (!rawValue) return safeFallback;
-
-  try {
-    const parsed = /^https?:\/\//i.test(rawValue) ? new URL(rawValue) : null;
-    const ext = path.extname(parsed ? parsed.pathname : rawValue);
-    return ext || safeFallback;
-  } catch (_) {
-    return path.extname(rawValue) || safeFallback;
-  }
+/** Loads a stored provider file and returns it as a data URI for embedding. */
+async function storedFileToDataUri(fileKey, fallbackMime = 'image/png') {
+  const buffer = await readStoredFile(fileKey);
+  const mime = mimeTypeForKey(fileKey);
+  return bufferToDataUri(buffer, mime === 'application/octet-stream' ? fallbackMime : mime);
 }
 
-async function safeUnlink(filePath) {
-  if (!filePath) return;
-  await fsPromises.unlink(filePath).catch(() => {});
-}
-
-async function fetchFileBuffer(fileUrl) {
-  const localPath = resolveLocalPdfPath(fileUrl);
-  if (localPath) {
-    return fsPromises.readFile(localPath);
-  }
-
-  const rawValue = String(fileUrl || '').trim();
-  if (!rawValue) {
-    throw new Error('FILE_URL_REQUIRED');
-  }
-
-  let resolvedUrl = rawValue;
-  if (!/^https?:\/\//i.test(rawValue)) {
-    if (!isBunnyConfigured()) {
-      throw new Error('REMOTE_FILE_URL_NOT_ALLOWED');
+/** Appends every page of the given stored PDFs to the document. */
+async function appendStoredPdfs(pdfDoc, fileRecords, caseId) {
+  for (const fileRecord of fileRecords) {
+    try {
+      const sourcePdf = await PDFDocument.load(await readStoredFile(fileRecord.file_url), { ignoreEncryption: true });
+      const copiedPages = await pdfDoc.copyPages(sourcePdf, sourcePdf.getPageIndices());
+      copiedPages.forEach((page) => pdfDoc.addPage(page));
+    } catch (err) {
+      logger.warn('CASE_REPORT_PDF_APPEND_FAILED', { caseId, fileId: fileRecord.id, error: err.message });
     }
-    resolvedUrl = generateSignedUrl(rawValue);
-  }
-
-  const response = await axios.get(resolvedUrl, {
-    responseType: 'arraybuffer',
-    timeout: 20000,
-    validateStatus: () => true,
-  });
-
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`HTTP_${response.status}`);
-  }
-
-  return Buffer.from(response.data);
-}
-
-async function fileUrlToDataUri(fileUrl, fallbackExtension = '.png') {
-  const localPath = resolveLocalPdfPath(fileUrl);
-  if (localPath) {
-    return fileToDataUri(localPath);
-  }
-
-  const fileBuffer = await fetchFileBuffer(fileUrl);
-  const tempPath = path.join(TEMP_DIR, `${randomUUID()}${getFileExtension(fileUrl, fallbackExtension)}`);
-
-  try {
-    await fsPromises.mkdir(TEMP_DIR, { recursive: true });
-    await fsPromises.writeFile(tempPath, fileBuffer);
-    return await fileToDataUri(tempPath);
-  } finally {
-    await safeUnlink(tempPath);
-  }
-}
-
-async function applyWatermarkToPdfBuffer(pdfBuffer, text) {
-  const inputPath = path.join(TEMP_DIR, `${randomUUID()}.pdf`);
-  let outputPath = null;
-
-  try {
-    await fsPromises.mkdir(TEMP_DIR, { recursive: true });
-    await fsPromises.writeFile(inputPath, pdfBuffer);
-    outputPath = await addWatermark(inputPath, { text });
-    return await fsPromises.readFile(outputPath);
-  } finally {
-    await safeUnlink(inputPath);
-    await safeUnlink(outputPath);
   }
 }
 
@@ -506,13 +432,12 @@ async function generateCaseReportPdf(caseId) {
 
   const providerFilesResult = await pool.query(
     `
-    SELECT cpf.*, cs.service_id, s.name AS service_name,
+    SELECT cpf.*, cs.item_name AS service_name,
            sp.full_name AS provider_name
     FROM case_provider_files cpf
     JOIN case_services cs ON cs.id = cpf.case_service_id
-    JOIN services s ON s.id = cs.service_id
     JOIN service_providers sp ON sp.id = cpf.uploaded_by
-    WHERE cs.case_id = $1 AND cpf.is_sick_leave = FALSE
+    WHERE cs.case_id = $1 AND cpf.is_sick_leave = FALSE AND cs.status <> 'CANCELLED'
     ORDER BY cpf.created_at ASC
     `,
     [caseId]
@@ -530,7 +455,7 @@ async function generateCaseReportPdf(caseId) {
   const serviceNames = Array.from(new Set(
     (
       Array.isArray(servicesSnapshot) && servicesSnapshot.length
-        ? servicesSnapshot.map((service) => formatDisplayValue(service?.service_name || service?.name))
+        ? servicesSnapshot.filter((service) => service?.status !== 'CANCELLED').map((service) => formatDisplayValue(service?.item_name || service?.service_name || service?.name))
         : providerFilesResult.rows.map((fileRecord) => formatDisplayValue(fileRecord.service_name))
     ).filter(Boolean)
   ));
@@ -558,11 +483,7 @@ async function generateCaseReportPdf(caseId) {
     }
 
     try {
-      const imageDataUri = await fileUrlToDataUri(fileRecord.file_url, '.png');
-
-      if (!imageDataUri) {
-        throw new Error('IMAGE_DATA_URI_EMPTY');
-      }
+      const imageDataUri = await storedFileToDataUri(fileRecord.file_url);
 
       renderedSections.push(`
         <section class="section">
@@ -579,7 +500,6 @@ async function generateCaseReportPdf(caseId) {
       logger.warn('Case report generator failed to embed provider image', {
         caseId,
         fileId: fileRecord.id,
-        fileUrl: fileRecord.file_url,
         error: error.message,
       });
 
@@ -615,24 +535,11 @@ async function generateCaseReportPdf(caseId) {
 
   if (pdfProviderFiles.length) {
     const pdfDoc = await PDFDocument.load(finalPdfBuffer, { ignoreEncryption: true });
-    await appendAttachedProviderPdfs(
-      pdfDoc,
-      pdfProviderFiles.map((fileRecord) => ({
-        ...fileRecord,
-        request_id: caseId,
-        provider_id: fileRecord.uploaded_by || null,
-        pdf_report_url: fileRecord.file_url,
-      }))
-    );
+    await appendStoredPdfs(pdfDoc, pdfProviderFiles, caseId);
     finalPdfBuffer = Buffer.from(await pdfDoc.save());
   }
 
-  const storedUrl = await storeGeneratedPdf(finalPdfBuffer, `case-report-${caseId}.pdf`, 'case-reports');
-  if (!storedUrl) {
-    throw new Error('CASE_REPORT_STORE_FAILED');
-  }
-
-  return storedUrl;
+  return savePrivateFile(finalPdfBuffer, { folder: 'case-reports', mimeType: 'application/pdf' });
 }
 
 async function generateSickLeavePdf(caseId, fileRecord) {
@@ -644,12 +551,9 @@ async function generateSickLeavePdf(caseId, fileRecord) {
     let basePdfBuffer = null;
 
     if (String(fileRecord.file_type || '').toUpperCase() === 'PDF') {
-      basePdfBuffer = await readStoredPdfBuffer(fileRecord.file_url);
+      basePdfBuffer = await readStoredFile(fileRecord.file_url);
     } else if (String(fileRecord.file_type || '').toUpperCase() === 'IMAGE') {
-      const imageDataUri = await fileUrlToDataUri(fileRecord.file_url, '.png');
-      if (!imageDataUri) {
-        throw new Error('IMAGE_DATA_URI_EMPTY');
-      }
+      const imageDataUri = await storedFileToDataUri(fileRecord.file_url);
 
       const html = `<!doctype html>
 <html lang="en">
@@ -699,9 +603,8 @@ async function generateSickLeavePdf(caseId, fileRecord) {
       throw new Error(`UNSUPPORTED_FILE_TYPE_${fileRecord.file_type}`);
     }
 
-    const watermarkedBuffer = await applyWatermarkToPdfBuffer(basePdfBuffer, 'Curvie');
-    const storedUrl = await storeGeneratedPdf(watermarkedBuffer, `sick-leave-${caseId}.pdf`, 'sick-leave');
-    return storedUrl || null;
+    const watermarkedBuffer = await addWatermarkToBuffer(basePdfBuffer, { text: 'Curevie' });
+    return await savePrivateFile(watermarkedBuffer, { folder: 'sick-leave', mimeType: 'application/pdf' });
   } catch (error) {
     logger.warn('Failed to generate sick leave PDF', {
       caseId,

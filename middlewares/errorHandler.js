@@ -1,4 +1,4 @@
-const { alertError } = require("../utils/telegram");
+const { alertError } = require('../utils/telegram');
 const { logger } = require('../utils/logger');
 
 class AppError extends Error {
@@ -11,38 +11,33 @@ class AppError extends Error {
   }
 }
 
-const Errors = {
-  notFound: (resource = 'Resource') => new AppError(`${resource} not found`, 404, 'NOT_FOUND'),
-  unauthorized: (msg = 'Unauthorized') => new AppError(msg, 401, 'UNAUTHORIZED'),
-  forbidden: (msg = 'Access denied') => new AppError(msg, 403, 'FORBIDDEN'),
-  badRequest: (msg) => new AppError(msg, 400, 'BAD_REQUEST'),
-  conflict: (msg) => new AppError(msg, 409, 'CONFLICT'),
-  internal: (msg = 'Internal server error') => new AppError(msg, 500, 'INTERNAL'),
+// Known errors that are the client's fault: answered without details and without alerting.
+const POSTGRES_ERRORS = {
+  23505: [409, 'DUPLICATE', 'This record already exists.'],
+  23503: [409, 'REFERENCE_CONFLICT', 'The operation conflicts with related records (missing reference or record in use).'],
+  23514: [400, 'CONSTRAINT_VIOLATION', 'The data violates a validation rule.'],
+  '22P02': [400, 'INVALID_INPUT', 'Invalid input format.'],
+  '22007': [400, 'INVALID_INPUT', 'Invalid date format.'],
+  '22008': [400, 'INVALID_INPUT', 'Date out of range.'],
 };
 
 const errorHandler = (err, req, res, next) => {
   if (err.isOperational) {
-    return res.status(err.statusCode).json({
-      message: err.message,
-      code: err.code,
-    });
+    return res.status(err.statusCode).json({ message: err.message, code: err.code });
   }
 
-  if (err.code === '23505') {
-    return res.status(409).json({ message: 'Duplicate entry — this record already exists.', code: 'DUPLICATE' });
-  }
-  if (err.code === '23503') {
-    return res.status(400).json({ message: 'Referenced record does not exist.', code: 'FOREIGN_KEY', constraint: err.constraint, detail: err.detail });
-  }
-  if (err.code === '22P02') {
-    return res.status(400).json({ message: 'Invalid ID format.', code: 'INVALID_UUID' });
+  const pgError = POSTGRES_ERRORS[err.code];
+  if (pgError) {
+    const [status, code, message] = pgError;
+    logger.warn('Database constraint error', { code: err.code, constraint: err.constraint, path: req.path });
+    return res.status(status).json({ message, code });
   }
 
-  if (err.name === 'JsonWebTokenError') {
-    return res.status(401).json({ message: 'Invalid token.', code: 'INVALID_TOKEN' });
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ message: 'Malformed JSON body', code: 'INVALID_JSON' });
   }
-  if (err.name === 'TokenExpiredError') {
-    return res.status(401).json({ message: 'Token expired.', code: 'TOKEN_EXPIRED' });
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ message: 'Request body is too large', code: 'PAYLOAD_TOO_LARGE' });
   }
 
   logger.error('Unhandled error', {
@@ -55,17 +50,14 @@ const errorHandler = (err, req, res, next) => {
   });
 
   alertError(err, req);
-  res.status(500).json({
-    message: process.env.NODE_ENV === 'production'
-      ? 'Something went wrong. Please try again later.'
-      : err.message,
+  return res.status(500).json({
+    message: process.env.NODE_ENV === 'production' ? 'Something went wrong. Please try again later.' : err.message,
     code: 'INTERNAL_ERROR',
   });
 };
 
 const notFoundHandler = (req, res) => {
-  logger.warn('Route not found', { path: req.path, method: req.method, ip: req.ip });
   res.status(404).json({ message: `Route ${req.method} ${req.path} not found`, code: 'ROUTE_NOT_FOUND' });
 };
 
-module.exports = { AppError, Errors, errorHandler, notFoundHandler };
+module.exports = { AppError, errorHandler, notFoundHandler };

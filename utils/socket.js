@@ -2,9 +2,11 @@ const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const Redis = require('ioredis');
 const jwt = require('jsonwebtoken');
+const xss = require('xss');
 const { logger } = require('./logger');
+const { isOriginAllowed } = require('../config/cors');
 
-const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+const MAX_MESSAGE_LENGTH = 4000;
 
 let io = null;
 
@@ -12,189 +14,176 @@ function getUserRoom(userId) {
   return userId ? `user:${userId}` : null;
 }
 
+function getRoleRoom(role) {
+  return role ? `role:${role}` : null;
+}
+
 function emitToUser(userId, event, payload = {}) {
   if (!io || !userId) return false;
-
-  const roomName = getUserRoom(userId);
-  if (!roomName) return false;
-
-  io.to(roomName).emit(event, payload);
+  io.to(getUserRoom(userId)).emit(event, payload);
   return true;
+}
+
+function emitToRole(role, event, payload = {}) {
+  if (!io || !role) return false;
+  io.to(getRoleRoom(role)).emit(event, payload);
+  return true;
+}
+
+function emitToChatRoom(roomId, event, payload = {}) {
+  if (!io || !roomId) return false;
+  io.to(`room:${roomId}`).emit(event, payload);
+  return true;
+}
+
+function getChatRepository() {
+  const pool = require('../config/db');
+  const ChatRepository = require('../repositories/ChatRepository');
+  return new ChatRepository(pool);
 }
 
 async function emitChatUnreadUpdate(chatRepo, userId, userRole, payload = {}) {
   if (!chatRepo || !userId || !userRole) return;
-
   const unreadCount = await chatRepo.countUnreadByParticipant(userId, userRole);
-  emitToUser(userId, 'chat_unread_updated', {
-    ...payload,
-    unread_count: Number(unreadCount || 0),
-  });
+  emitToUser(userId, 'chat_unread_updated', { ...payload, unread_count: Number(unreadCount || 0) });
+}
+
+/** Notifies both chat participants that their unread counters changed. */
+async function broadcastChatUnread(chatRepo, room) {
+  const participants = [
+    { userId: room.patient_id, userRole: 'PATIENT' },
+    { userId: room.provider_id, userRole: 'PROVIDER' },
+  ].filter((participant) => participant.userId);
+
+  await Promise.allSettled(participants.map((participant) =>
+    emitChatUnreadUpdate(chatRepo, participant.userId, participant.userRole, {
+      source: 'case_room',
+      room_id: room.id,
+      case_id: room.case_id,
+    })
+  ));
+}
+
+async function authenticateSocket(socket, next) {
+  const token = socket.handshake.auth?.token
+    || socket.handshake.headers?.authorization?.replace('Bearer ', '');
+  if (!token) return next(new Error('Authentication required'));
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.jti) {
+      const { isTokenBlacklisted } = require('./cache');
+      if (await isTokenBlacklisted(decoded.jti)) return next(new Error('Token revoked'));
+    }
+    socket.user = decoded;
+    return next();
+  } catch (_) {
+    return next(new Error('Invalid token'));
+  }
 }
 
 function initSocketServer(httpServer) {
-  const pubClient = new Redis(redisUrl);
-  const subClient = pubClient.duplicate();
-
-  pubClient.on('error', (err) =>
-    logger.warn('Socket.io Redis pub error', { message: err.message }));
-  subClient.on('error', (err) =>
-    logger.warn('Socket.io Redis sub error', { message: err.message }));
-
   io = new Server(httpServer, {
     cors: {
-      origin: [
-        'https://curevie.net',
-        'https://www.curevie.net',
-        'https://admin.curevie.net',
-        'https://provider.curevie.net',
-        'https://curvie.net',
-        'https://www.curvie.net',
-        'https://admin.curvie.net',
-        'https://provider.curvie.net',
-        /^https:\/\/curvie.*\.vercel\.app$/,
-        /^https:\/\/curevie.*\.vercel\.app$/,
-      ],
+      origin: (origin, callback) => callback(null, !origin || isOriginAllowed(origin)),
       credentials: true,
     },
     transports: ['websocket', 'polling'],
+    maxHttpBufferSize: 64 * 1024,
   });
 
-  io.adapter(createAdapter(pubClient, subClient));
-
-  io.use((socket, next) => {
-    const token = socket.handshake.auth?.token
-      || socket.handshake.headers?.authorization?.replace('Bearer ', '');
-    if (!token) {
-      return next(new Error('Authentication required'));
-    }
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      socket.user = decoded;
-      next();
-    } catch (err) {
-      return next(new Error('Invalid token'));
-    }
-  });
+  // Redis fans events out across backend instances; a single local instance works without it.
+  if (process.env.REDIS_URL) {
+    const pubClient = new Redis(process.env.REDIS_URL);
+    const subClient = pubClient.duplicate();
+    pubClient.on('error', (err) => logger.warn('Socket.io Redis pub error', { message: err.message }));
+    subClient.on('error', (err) => logger.warn('Socket.io Redis sub error', { message: err.message }));
+    io.adapter(createAdapter(pubClient, subClient));
+  }
+  io.use(authenticateSocket);
 
   io.on('connection', (socket) => {
-    const userRoom = getUserRoom(socket.user.id);
-    if (userRoom) {
-      socket.join(userRoom);
+    const { user } = socket;
+    socket.join(getUserRoom(user.id));
+    socket.join(getRoleRoom(user.role));
+
+    // Access tokens are short lived; drop the socket when the token expires so the
+    // client reconnects with a fresh token (and revoked users lose live updates).
+    if (user.exp) {
+      const msUntilExpiry = user.exp * 1000 - Date.now();
+      const timer = setTimeout(() => socket.disconnect(true), Math.max(msUntilExpiry, 0));
+      socket.on('disconnect', () => clearTimeout(timer));
     }
 
-    logger.info('Socket connected', {
-      userId: socket.user.id,
-      role: socket.user.role,
-    });
-
-    socket.on('join_room', async ({ room_id }) => {
+    socket.on('join_room', async (payload = {}) => {
       try {
-        const pool = require('../config/db');
-        const ChatRepository = require('../repositories/ChatRepository');
-        const chatRepo = new ChatRepository(pool);
-
-        const room = await chatRepo.findRoomById(room_id);
+        const chatRepo = getChatRepository();
+        const room = await chatRepo.findAccessibleRoom(payload.room_id, user);
         if (!room) {
-          socket.emit('error', { message: 'Room not found' });
+          socket.emit('error', { message: 'Room not found or access denied' });
           return;
         }
 
-        const user = socket.user;
-        const canAccess =
-          user.role === 'ADMIN' ||
-          (user.role === 'PATIENT' && room.patient_id === user.id) ||
-          (user.role === 'PROVIDER' && room.provider_id === user.id);
+        socket.join(`room:${room.id}`);
+        socket.emit('joined_room', { room_id: room.id });
 
-        if (!canAccess) {
-          socket.emit('error', { message: 'Access denied' });
-          return;
+        if (user.role !== 'ADMIN') {
+          const marked = await chatRepo.markAsRead(room.id, user.id);
+          if (marked.length) await broadcastChatUnread(chatRepo, room);
         }
-
-        socket.join(`room:${room_id}`);
-        socket.emit('joined_room', { room_id });
-
-        const markedMessages = await chatRepo.markAsRead(room_id, user.id);
-        if (markedMessages.length) {
-          await emitChatUnreadUpdate(chatRepo, user.id, user.role, {
-            source: 'case_room',
-            room_id,
-            case_id: room.case_id,
-          });
-        }
-
-        logger.info('Socket joined room', {
-          userId: user.id, room_id,
-        });
       } catch (err) {
         logger.error('Socket join_room error', { message: err.message });
         socket.emit('error', { message: 'Failed to join room' });
       }
     });
 
-    socket.on('send_message', async ({ room_id, content, file_url }) => {
+    socket.on('leave_room', (payload = {}) => {
+      if (payload.room_id) socket.leave(`room:${payload.room_id}`);
+    });
+
+    socket.on('send_message', async (payload = {}) => {
       try {
-        if (!content && !file_url) {
+        const content = typeof payload.content === 'string' ? xss(payload.content.trim()) : '';
+        if (!content) {
           socket.emit('error', { message: 'Message content required' });
           return;
         }
+        if (content.length > MAX_MESSAGE_LENGTH) {
+          socket.emit('error', { message: `Message is longer than ${MAX_MESSAGE_LENGTH} characters` });
+          return;
+        }
 
-        const pool = require('../config/db');
-        const ChatRepository = require('../repositories/ChatRepository');
-        const chatRepo = new ChatRepository(pool);
-
-        const room = await chatRepo.findRoomById(room_id);
+        // Re-check access on every send: assignments can change while a socket stays open.
+        const chatRepo = getChatRepository();
+        const room = await chatRepo.findAccessibleRoom(payload.room_id, user);
         if (!room) {
-          socket.emit('error', { message: 'Room not found' });
+          socket.emit('error', { message: 'Room not found or access denied' });
+          return;
+        }
+        if (!room.can_send) {
+          socket.emit('error', { message: 'This conversation is closed' });
           return;
         }
 
-        const socketRooms = socket.rooms;
-        if (!socketRooms.has(`room:${room_id}`)) {
-          socket.emit('error', { message: 'Join the room first' });
-          return;
-        }
-
-        const user = socket.user;
         const message = await chatRepo.saveMessage({
-          room_id,
+          room_id: room.id,
           sender_id: user.id,
           sender_role: user.role,
-          content: content || null,
-          file_url: file_url || null,
+          content,
         });
 
-        io.to(`room:${room_id}`).emit('new_message', message);
-
-        const participants = [
-          { userId: room.patient_id, userRole: 'PATIENT' },
-          { userId: room.provider_id, userRole: 'PROVIDER' },
-        ].filter((participant) => participant.userId);
-
-        await Promise.allSettled(
-          participants.map((participant) =>
-            emitChatUnreadUpdate(chatRepo, participant.userId, participant.userRole, {
-              source: 'case_room',
-              room_id,
-              case_id: room.case_id,
-            })
-          )
-        );
+        emitToChatRoom(room.id, 'new_message', message);
+        await broadcastChatUnread(chatRepo, room);
       } catch (err) {
         logger.error('Socket send_message error', { message: err.message });
         socket.emit('error', { message: 'Failed to send message' });
       }
     });
 
-    socket.on('typing', ({ room_id }) => {
-      socket.to(`room:${room_id}`).emit('user_typing', {
-        user_id: socket.user.id,
-        role: socket.user.role,
-      });
-    });
-
-    socket.on('disconnect', () => {
-      logger.info('Socket disconnected', { userId: socket.user?.id });
+    socket.on('typing', (payload = {}) => {
+      const roomName = `room:${payload.room_id}`;
+      if (!payload.room_id || !socket.rooms.has(roomName)) return;
+      socket.to(roomName).emit('user_typing', { room_id: payload.room_id, user_id: user.id, role: user.role });
     });
   });
 
@@ -202,9 +191,11 @@ function initSocketServer(httpServer) {
   return io;
 }
 
-function getIO() {
-  if (!io) throw new Error('Socket.io not initialized');
-  return io;
-}
-
-module.exports = { initSocketServer, getIO, emitToUser, getUserRoom };
+module.exports = {
+  initSocketServer,
+  emitToUser,
+  emitToRole,
+  emitToChatRoom,
+  broadcastChatUnread,
+  getUserRoom,
+};

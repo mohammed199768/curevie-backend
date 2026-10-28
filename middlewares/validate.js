@@ -1,19 +1,22 @@
 const xss = require('xss');
 
-function sanitizeValue(value) {
+// Secrets are compared or hashed byte-for-byte, so they must never be rewritten by the XSS filter.
+const RAW_KEYS = /password|token/i;
+
+function sanitizeValue(value, key = '') {
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeValue(item));
+    return value.map((item) => sanitizeValue(item, key));
   }
 
-  if (value && typeof value === 'object') {
-    return Object.keys(value).reduce((acc, key) => {
-      acc[key] = sanitizeValue(value[key]);
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    return Object.keys(value).reduce((acc, childKey) => {
+      acc[childKey] = sanitizeValue(value[childKey], childKey);
       return acc;
     }, {});
   }
 
   if (typeof value === 'string') {
-    return xss(value.trim());
+    return RAW_KEYS.test(key) ? value : xss(value.trim());
   }
 
   return value;
@@ -28,8 +31,17 @@ const validate = (schema, property = 'body') => (req, res, next) => {
   });
 
   if (error) {
-    const details = error.details.map((d) => d.message).join(', ');
-    return res.status(400).json({ message: details, code: 'VALIDATION_ERROR' });
+    // details maps each field to its messages so forms can show them inline.
+    const details = {};
+    for (const item of error.details) {
+      const field = item.path.length ? String(item.path[0]) : '_';
+      (details[field] = details[field] || []).push(item.message);
+    }
+    return res.status(400).json({
+      message: error.details.map((d) => d.message).join(', '),
+      code: 'VALIDATION_ERROR',
+      details,
+    });
   }
 
   req[property] = value;

@@ -1,5 +1,4 @@
-// AUDIT-FIX: Q2 — centralized pagination utility
-// Replaces 12+ duplicated instances of: const offset = (page - 1) * limit
+// Shared pagination helpers.
 // Usage: const { page, limit, offset } = paginate(req.query);
 
 /**
@@ -31,6 +30,7 @@ function paginationMeta(total, page, limit) {
     page,
     limit,
     pages: Math.ceil(total / limit),
+    totalPages: Math.ceil(total / limit),
     hasNext: page * limit < total,
     hasPrev: page > 1,
   };

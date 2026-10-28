@@ -155,41 +155,33 @@ async function ping() {
   return run((redis) => redis.ping(), null);
 }
 
-// AUDIT-FIX: S4 — token blacklist using Redis
-// Key: blacklist:jti:{jti}, Value: '1', TTL: remaining token lifetime
+// Token blacklist: key blacklist:jti:{jti} with a TTL equal to the token's remaining lifetime.
 const TOKEN_BLACKLIST_PREFIX = 'blacklist:jti:';
+// In production a missing Redis means we cannot prove a token was not revoked, so we fail secure.
+const FAIL_SECURE = process.env.NODE_ENV === 'production';
 
-// AUDIT-FIX: S4 — add a token's jti to the blacklist with TTL
 async function blacklistToken(jti, expiresInSeconds) {
   if (!jti || !expiresInSeconds || expiresInSeconds <= 0) return;
   const redis = await getClient();
   if (!redis) {
-    // AUDIT-FIX: S4 — if Redis is down, log but don't throw from blacklist write
-    // The token will still expire naturally within 5 minutes
     logger.error('Redis unavailable for blacklist write', { jti });
     return;
   }
-  // AUDIT-FIX: S4 — set with TTL so blacklist self-cleans after token expiry
   await redis.set(`${TOKEN_BLACKLIST_PREFIX}${jti}`, '1', 'EX', expiresInSeconds);
 }
 
-// AUDIT-FIX: S4 — check if a token's jti is blacklisted
 async function isTokenBlacklisted(jti) {
   if (!jti) return false;
   const redis = await getClient();
   if (!redis) {
-    // AUDIT-FIX: S4 — Redis down = fail secure = treat as blacklisted
-    // Medical data demands fail-secure behavior
-    logger.error('Redis unavailable for blacklist check — failing secure', { jti });
-    return true;
+    if (FAIL_SECURE) logger.error('Redis unavailable for blacklist check, failing secure', { jti });
+    return FAIL_SECURE;
   }
   try {
-    const result = await redis.get(`${TOKEN_BLACKLIST_PREFIX}${jti}`);
-    return result === '1';
+    return (await redis.get(`${TOKEN_BLACKLIST_PREFIX}${jti}`)) === '1';
   } catch (err) {
-    // AUDIT-FIX: S4 — Redis error = fail secure
-    logger.error('Redis blacklist read failed — failing secure', { jti, error: err.message });
-    return true;
+    logger.error('Redis blacklist read failed', { jti, error: err.message });
+    return FAIL_SECURE;
   }
 }
 

@@ -110,7 +110,7 @@ function buildInvoiceHtml({
   const servicesRows = services.length
     ? services.map((s) => `
         <tr>
-          <td>${escapeHtml(s.service_name || s.name || '-')}</td>
+          <td>${escapeHtml(s.item_name || s.service_name || s.name || '-')}</td>
           <td class="center">${escapeHtml(s.provider_name || '-')}</td>
           <td class="num">${formatMoney(s.original_price || 0)}</td>
           <td class="num bold">${formatMoney(s.bundle_price || 0)}</td>
@@ -555,11 +555,9 @@ async function generateCaseInvoicePdf({ caseId, invoice, payments, adjustments }
     const liveResult = await pool.query(
       `SELECT
          cs.*,
-         s.name AS service_name,
-         s.description AS service_description,
+         cs.item_name AS service_name,
          sp.full_name AS provider_name
        FROM case_services cs
-       LEFT JOIN services s          ON s.id  = cs.service_id
        LEFT JOIN service_providers sp ON sp.id = cs.provider_id
        WHERE cs.case_id = $1
        ORDER BY cs.created_at ASC`,
@@ -567,6 +565,9 @@ async function generateCaseInvoicePdf({ caseId, invoice, payments, adjustments }
     );
     services = liveResult.rows;
   }
+
+  // Cancelled line items are not billed.
+  services = services.filter((service) => service?.status !== 'CANCELLED');
 
   // --- Logo ---
   const logoDataUri = await fileToDataUri(LOGO_PATH).catch(() => null);

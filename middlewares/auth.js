@@ -1,158 +1,110 @@
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
-const pool = require('../config/db');
 const { audit } = require('../utils/logger');
+const { isTokenBlacklisted } = require('../utils/cache');
 
-// AUDIT-FIX: LOW — removed hardcoded fallback, app fails fast if misconfigured
-if (!process.env.JWT_SECRET) {
-  throw new Error('FATAL: JWT_SECRET environment variable is not set.');
+// Fail fast when secrets are missing or reused: the app must never sign tokens with a weak key.
+if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
+  throw new Error('FATAL: JWT_SECRET and JWT_REFRESH_SECRET environment variables must be set.');
+}
+if (process.env.JWT_SECRET === process.env.JWT_REFRESH_SECRET) {
+  throw new Error('FATAL: JWT_SECRET and JWT_REFRESH_SECRET must be different.');
 }
 
-const generateAccessToken = (payload) => {
-  return jwt.sign(
-    {
-      ...payload,
-      // AUDIT-FIX: S4 — jti (JWT ID) allows blacklisting specific tokens
-      jti: randomUUID(),
-    },
-    process.env.JWT_SECRET,
-    {
-      // AUDIT-FIX: S4 — 5m expiry, backed by Redis blacklist for immediate revocation
-      expiresIn: process.env.JWT_EXPIRES_IN || '5m',
-    }
-  );
-};
+const ACCESS_TOKEN_TTL = process.env.JWT_EXPIRES_IN || '5m';
+const REFRESH_TOKEN_TTL_DAYS = 30;
 
-const generateRefreshToken = (payload) => {
-  return jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: '30d',
-  });
-};
+const generateAccessToken = (payload) => jwt.sign(
+  { ...payload, jti: randomUUID() },
+  process.env.JWT_SECRET,
+  { expiresIn: ACCESS_TOKEN_TTL }
+);
 
-const saveRefreshToken = async (userId, role, token) => {
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 30);
-  await pool.query(
-    `INSERT INTO refresh_tokens (user_id, role, token, expires_at)
-     VALUES ($1, $2, $3, $4)
-     -- AUDIT-FIX: S5 — refresh token reuse detection
-     ON CONFLICT (token) DO UPDATE SET revoked_at = NOW()`,
-    [userId, role, token, expiresAt]
-  );
-};
+const generateRefreshToken = (payload) => jwt.sign(
+  { ...payload, jti: randomUUID() },
+  process.env.JWT_REFRESH_SECRET,
+  { expiresIn: `${REFRESH_TOKEN_TTL_DAYS}d` }
+);
+
+/** Verifies a bearer token and rejects blacklisted ones. Returns the payload or throws. */
+async function verifyAccessToken(token) {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded.jti && await isTokenBlacklisted(decoded.jti)) {
+    const error = new Error('Token revoked');
+    error.name = 'TokenRevokedError';
+    throw error;
+  }
+  return decoded;
+}
+
+function readBearer(req) {
+  const header = req.headers.authorization;
+  return header && header.startsWith('Bearer ') ? header.slice(7) : null;
+}
 
 const authenticate = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'No token provided', code: 'NO_TOKEN' });
-  }
-  const token = authHeader.split(' ')[1];
+  const token = readBearer(req);
+  if (!token) return res.status(401).json({ message: 'No token provided', code: 'NO_TOKEN' });
+
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // AUDIT-FIX: S4 — check if this specific token has been blacklisted
-    // Runs on every authenticated request — Redis O(1) lookup
-    if (decoded.jti) {
-      const { isTokenBlacklisted } = require('../utils/cache');
-      const blacklisted = await isTokenBlacklisted(decoded.jti);
-      if (blacklisted) {
-        return res.status(401).json({
-          message: 'Token has been revoked. Please log in again.',
-          code: 'TOKEN_REVOKED',
-        });
-      }
-    }
-
-    req.user = decoded;
-    next();
+    req.user = await verifyAccessToken(token);
+    return next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ message: 'Token expired', code: 'TOKEN_EXPIRED' });
+    }
+    if (err.name === 'TokenRevokedError') {
+      return res.status(401).json({ message: 'Token has been revoked. Please log in again.', code: 'TOKEN_REVOKED' });
     }
     return res.status(401).json({ message: 'Invalid token', code: 'INVALID_TOKEN' });
   }
 };
 
+/** Attaches req.user when a valid token is present, otherwise continues as a guest. */
 const guestOrAuthenticated = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    req.user = null;
-    return next();
-  }
-
-  const token = authHeader.split(' ')[1];
+  const token = readBearer(req);
+  req.user = null;
+  if (!token) return next();
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // AUDIT-FIX: S4 — check blacklist for guest-or-auth routes too
-    if (decoded.jti) {
-      const { isTokenBlacklisted } = require('../utils/cache');
-      const blacklisted = await isTokenBlacklisted(decoded.jti);
-      if (blacklisted) {
-        req.user = null;
-        return next();
-      }
-    }
-
-    req.user = decoded;
-    return next();
-  } catch (err) {
+    req.user = await verifyAccessToken(token);
+  } catch (_) {
     req.user = null;
-    return next();
   }
+  return next();
 };
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'ADMIN') {
-    audit('FORBIDDEN_ACCESS', { userId: req.user.id, role: req.user.role, ip: req.ip, details: req.path });
-    return res.status(403).json({ message: 'Admin access required', code: 'FORBIDDEN' });
-  }
-  next();
-};
-
-const staffOnly = (req, res, next) => {
-  if (!['ADMIN', 'PROVIDER'].includes(req.user.role)) {
-    audit('FORBIDDEN_ACCESS', { userId: req.user.id, role: req.user.role, ip: req.ip, details: req.path });
-    return res.status(403).json({ message: 'Staff access required', code: 'FORBIDDEN' });
-  }
-  next();
-};
-
-const selfOrStaff = (req, res, next) => {
-  const isStaff = ['ADMIN', 'PROVIDER'].includes(req.user.role);
-  const isSelf = req.user.role === 'PATIENT' && req.user.id === req.params.id;
-  if (!isStaff && !isSelf) {
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (req.user && roles.includes(req.user.role)) return next();
+    audit('FORBIDDEN_ACCESS', { userId: req.user?.id, role: req.user?.role, ip: req.ip, details: req.path });
     return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
-  }
-  next();
-};
+  };
+}
 
+const adminOnly = requireRole('ADMIN');
+const providerOnly = requireRole('PROVIDER');
+const patientOnly = requireRole('PATIENT');
+const staffOnly = requireRole('ADMIN', 'PROVIDER');
+
+/** Admin, or the provider/patient whose id is in :id. */
 const selfOrAdmin = (req, res, next) => {
   if (req.user.role === 'ADMIN') return next();
-  if (req.user.role === 'PROVIDER' && req.params.id === req.user.id) return next();
-  if (req.user.role === 'PATIENT' && req.params.id === req.user.id) return next();
-  return res.status(403).json({ message: 'Forbidden', code: 'FORBIDDEN' });
+  if (['PROVIDER', 'PATIENT'].includes(req.user.role) && req.params.id === req.user.id) return next();
+  return res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
 };
-
-const providerOnly = (req, res, next) => {
-  if (req.user.role === 'PROVIDER') {
-    return next();
-  }
-  return res.status(403).json({ message: 'Provider access required', code: 'FORBIDDEN' });
-};
-
-const patientOnly = (req, res, next) => {
-  if (req.user.role === 'PATIENT') {
-    return next();
-  }
-  return res.status(403).json({ message: 'Patient access required', code: 'FORBIDDEN' });
-};
-
-// Keep generateToken for backward compatibility
-const generateToken = generateAccessToken;
 
 module.exports = {
-  authenticate, guestOrAuthenticated, adminOnly, staffOnly, selfOrStaff, selfOrAdmin,
-  providerOnly, patientOnly,
-  generateToken, generateAccessToken, generateRefreshToken, saveRefreshToken,
+  ACCESS_TOKEN_TTL,
+  REFRESH_TOKEN_TTL_DAYS,
+  authenticate,
+  guestOrAuthenticated,
+  requireRole,
+  adminOnly,
+  providerOnly,
+  patientOnly,
+  staffOnly,
+  selfOrAdmin,
+  generateAccessToken,
+  generateRefreshToken,
+  verifyAccessToken,
 };

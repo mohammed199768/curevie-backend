@@ -1,15 +1,12 @@
 const express = require('express');
 const Joi = require('joi');
 const { authenticate, adminOnly } = require('../../middlewares/auth');
-const { apiLimiter, readLimiter } = require('../../middlewares/rateLimiter');
+const { apiLimiter, readLimiter, guestRequestLimiter } = require('../../middlewares/rateLimiter');
 const asyncHandler = require('../../utils/asyncHandler');
 const pool = require('../../config/db');
-const NotificationRepository = require('../../repositories/NotificationRepository');
-const { createNotificationService } = require('../notifications/notification.service');
+const notificationService = require('../notifications/notification.service');
 
 const router = express.Router();
-const notifRepo = new NotificationRepository(pool);
-const notifService = createNotificationService(notifRepo);
 
 const submitSchema = Joi.object({
   name: Joi.string().trim().min(2).max(150).required(),
@@ -19,7 +16,7 @@ const submitSchema = Joi.object({
 });
 
 // POST /api/v1/contact — public, no auth required
-router.post('/', apiLimiter, asyncHandler(async (req, res) => {
+router.post('/', guestRequestLimiter, asyncHandler(async (req, res) => {
   const { error, value } = submitSchema.validate(req.body, { stripUnknown: true });
   if (error) {
     return res.status(400).json({ message: error.details[0].message, code: 'VALIDATION_ERROR' });
@@ -32,23 +29,12 @@ router.post('/', apiLimiter, asyncHandler(async (req, res) => {
     [value.name, value.email, value.phone || null, value.message]
   );
 
-  // Notifications are best-effort only.
-  try {
-    const adminIds = await notifRepo.getAllAdminIds();
-
-    await Promise.allSettled(adminIds.map((adminId) =>
-      notifService.createNotification({
-        userId: adminId,
-        userRole: 'ADMIN',
-        type: 'CONTACT_MESSAGE',
-        title: `رسالة جديدة من ${value.name}`,
-        body: value.message.slice(0, 120),
-        data: { contact_message_id: result.rows[0].id },
-      })
-    ));
-  } catch (_) {
-    // Do not fail the public submission when notification fan-out fails.
-  }
+  notificationService.notifySafely('contact_message', () => notificationService.notifyAdmins({
+    type: 'CONTACT_MESSAGE',
+    title: `رسالة جديدة من ${value.name}`,
+    body: value.message.slice(0, 120),
+    data: { contact_message_id: result.rows[0].id },
+  }));
 
   return res.status(201).json({ message: 'Message received', id: result.rows[0].id });
 }));
