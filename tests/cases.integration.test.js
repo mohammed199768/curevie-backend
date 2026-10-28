@@ -16,9 +16,6 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-access-secret';
 process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'test-refresh-secret';
 // No Redis in tests: the cache degrades to in-memory and socket.io runs on a single node.
 delete process.env.REDIS_URL;
-// Tests must never talk to the real CDN; private files go to local storage.
-delete process.env.BUNNY_STORAGE_ZONE;
-delete process.env.BUNNY_API_KEY;
 
 const skip = !TEST_DATABASE_URL && 'TEST_DATABASE_URL is not set';
 
@@ -116,6 +113,7 @@ before(async () => {
   require('../utils/socket').initSocketServer(server);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
+  process.env.PUBLIC_API_URL = baseUrl;
 
   tokens.admin = (await login('admin@test.io', 'Passw0rd!', 'ADMIN')).token;
   tokens.docArea = (await login('doc.area@test.io', 'Passw0rd!', 'PROVIDER')).token;
@@ -369,6 +367,33 @@ test('public catalog counts match what a visitor can order', { skip }, async () 
   const byKind = Object.fromEntries(res.body.data.services.map((row) => [row.service_kind, row.count]));
   assert.deepEqual(byKind, { MEDICAL: 1, LAB: 1 }, 'inactive and VIP-only services are not counted');
   assert.equal(res.body.data.packages, 1);
+});
+
+test('catalog images are stored on disk and served publicly', { skip }, async () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const upload = (name) => api('PUT', `/services/${ids['Home doctor visit']}/image`, {
+    token: tokens.admin, form: fileForm(png, name, 'image/png'),
+  });
+
+  const first = await upload('a.png');
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.ok(first.body.image_url.startsWith(`${baseUrl}/api/v1/media/services/`), first.body.image_url);
+  assert.match(first.body.image_url, /\/[0-9a-f-]{36}\.png$/);
+
+  const image = await fetch(first.body.image_url);
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.match(image.headers.get('cache-control'), /immutable/);
+  assert.equal(Buffer.compare(Buffer.from(await image.arrayBuffer()), png), 0);
+
+  const second = await upload('b.png');
+  assert.notEqual(second.body.image_url, first.body.image_url);
+  assert.equal((await fetch(first.body.image_url)).status, 404, 'the replaced image is deleted');
+  assert.equal((await fetch(`${baseUrl}/api/v1/media/..%2F..%2F.env`)).status, 404, 'no path traversal');
+  assert.equal((await fetch(`${baseUrl}/api/v1/media/..%2Fprivate%2Fx`)).status, 404);
 });
 
 test('rejecting an assignment returns it to the admin and revokes access', { skip }, async () => {

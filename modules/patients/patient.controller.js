@@ -150,7 +150,6 @@ async function uploadAvatar(req, res) {
   if (!patient) throw new AppError('Patient not found', 404, 'PATIENT_NOT_FOUND');
 
   const avatarUrl = await uploadPublicMedia(req.file.buffer, { folder: 'patients/avatars', mimeType: req.file.mimetype });
-  if (!avatarUrl) throw new AppError('Media service not configured', 503, 'MEDIA_NOT_CONFIGURED');
 
   const updated = await patientRepo.updateAvatar(req.params.id, avatarUrl);
   if (patient.avatar_url) await deletePublicMedia(patient.avatar_url);

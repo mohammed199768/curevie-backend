@@ -22,8 +22,17 @@ docker compose up -d --wait postgres redis
 
 echo "==> Backing up the database..."
 mkdir -p backups
+STAMP=$(date +%Y%m%d-%H%M%S)
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
-  > "backups/curevie-$(date +%Y%m%d-%H%M%S).dump"
+  > "backups/curevie-$STAMP.dump"
+
+echo "==> Backing up uploaded files (images and medical files)..."
+docker compose run --rm --no-deps -T backend tar -czf - -C /app uploads \
+  > "backups/uploads-$STAMP.tar.gz"
+
+# Keep the 10 most recent backups of each kind.
+ls -1t backups/curevie-*.dump 2>/dev/null | tail -n +11 | xargs -r rm -f
+ls -1t backups/uploads-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f
 
 echo "==> Running migrations with the new image (stops here if a migration fails)..."
 docker compose run --rm --no-deps backend node config/initDb.js

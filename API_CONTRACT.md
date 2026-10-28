@@ -31,6 +31,7 @@ Points, coupons, workflow stages/tasks, lab result entry and culture results no 
 - PATIENT `{ id, email, role, full_name, phone, secondary_phone, address, area_id, date_of_birth, gender, is_vip, vip_discount, avatar_url }`
 
 `total_points` was removed. `avatar_url` / `image_url` are absolute URLs (or null) — use them directly as `src`.
+They point to `GET /api/v1/media/<folder>/<uuid>.<ext>`: public, no auth, cached for a year (file names are never reused).
 
 Access tokens live 5 minutes. On 401 `TOKEN_EXPIRED` call refresh once, then retry.
 Do not persist the access token in `localStorage`; keep it in memory (zustand without persist) and

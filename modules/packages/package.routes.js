@@ -146,7 +146,6 @@ router.put(
     if (!pkg) throw new AppError('Package not found', 404, 'PACKAGE_NOT_FOUND');
 
     const imageUrl = await uploadPublicMedia(req.file.buffer, { folder: 'packages', mimeType: req.file.mimetype });
-    if (!imageUrl) throw new AppError('Media service not configured', 503, 'MEDIA_NOT_CONFIGURED');
 
     await packageRepo.updateImage(req.params.id, imageUrl);
     if (pkg.image_url) await deletePublicMedia(pkg.image_url);

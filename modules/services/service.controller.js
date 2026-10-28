@@ -127,7 +127,6 @@ async function uploadServiceImage(req, res) {
   if (!service) throw new AppError('Service not found', 404, 'SERVICE_NOT_FOUND');
 
   const imageUrl = await uploadPublicMedia(req.file.buffer, { folder: 'services', mimeType: req.file.mimetype });
-  if (!imageUrl) throw new AppError('Media service not configured', 503, 'MEDIA_NOT_CONFIGURED');
 
   const updated = await serviceRepo.updateImage(req.params.id, imageUrl);
   if (service.image_url) await deletePublicMedia(service.image_url);

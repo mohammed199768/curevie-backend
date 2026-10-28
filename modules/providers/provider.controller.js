@@ -138,7 +138,6 @@ async function uploadAvatar(req, res) {
   if (!provider) throw new AppError('Provider not found', 404, 'PROVIDER_NOT_FOUND');
 
   const avatarUrl = await uploadPublicMedia(req.file.buffer, { folder: 'providers/avatars', mimeType: req.file.mimetype });
-  if (!avatarUrl) throw new AppError('Media service not configured', 503, 'MEDIA_NOT_CONFIGURED');
 
   await providerRepo.updateAvatar(req.params.id, avatarUrl);
   if (provider.avatar_url) await deletePublicMedia(provider.avatar_url);

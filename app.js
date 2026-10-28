@@ -10,6 +10,7 @@ const { errorHandler, notFoundHandler, AppError } = require('./middlewares/error
 const { isOriginAllowed } = require('./config/cors');
 const pool = require('./config/db');
 const redisCache = require('./utils/cache');
+const { PUBLIC_ROOT, PUBLIC_MEDIA_ROUTE } = require('./utils/storage');
 
 const app = express();
 
@@ -27,6 +28,17 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'same-site' },
   hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
   referrerPolicy: { policy: 'no-referrer' },
+}));
+
+// Public images (avatars, catalog). File names are random UUIDs and never reused, so they can be
+// cached forever. Private medical files live elsewhere and are only streamed after access checks.
+app.use(PUBLIC_MEDIA_ROUTE, express.static(PUBLIC_ROOT, {
+  dotfiles: 'deny',
+  index: false,
+  redirect: false,
+  immutable: true,
+  maxAge: '365d',
+  setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
 }));
 
 app.use(cors({
