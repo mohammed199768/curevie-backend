@@ -120,14 +120,18 @@ class ServiceRepository extends BaseRepository {
   }
 
   async createService(
-    { name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id, is_vip_exclusive },
+    {
+      name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id,
+      is_vip_exclusive, provider_share_type, provider_share_value,
+    },
     db = null
   ) {
     return this._queryOne(
       `INSERT INTO services (
-        name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id, is_vip_exclusive
+        name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id,
+        is_vip_exclusive, provider_share_type, provider_share_value
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         name,
         name_ar || null,
@@ -139,6 +143,8 @@ class ServiceRepository extends BaseRepository {
         service_kind || 'MEDICAL',
         category_id || null,
         Boolean(is_vip_exclusive),
+        provider_share_type ?? null,
+        provider_share_value ?? null,
       ],
       db
     );
@@ -149,6 +155,7 @@ class ServiceRepository extends BaseRepository {
       `SELECT s.id, s.name, s.name_ar, s.name_en, s.description, s.description_ar, s.description_en,
               s.price, s.service_kind, s.category_id,
               s.is_vip_exclusive, s.is_active, s.image_url, s.created_at, s.updated_at,
+              s.provider_share_type, s.provider_share_value,
               c.name AS category_name, c.description AS category_description
        FROM services s LEFT JOIN service_categories c ON s.category_id = c.id
        WHERE s.id = $1`,
@@ -172,6 +179,8 @@ class ServiceRepository extends BaseRepository {
         'category_id',
         'is_vip_exclusive',
         'is_active',
+        'provider_share_type',
+        'provider_share_value',
       ],
       db
     );

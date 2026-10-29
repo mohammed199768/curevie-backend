@@ -6,6 +6,7 @@ const ChatRepository = require('../../repositories/ChatRepository');
 const events = require('./case.events');
 const { t } = require('../../utils/i18n/ar');
 const { toPublicMediaUrl } = require('../../utils/storage');
+const earnings = require('../earnings/earnings.service');
 const {
   ITEM_CATALOG,
   PROVIDER_TYPES_BY_KIND,
@@ -243,11 +244,19 @@ async function buildCaseView(caseRow, user) {
     services = services.map(({ notes, ...rest }) => (user.role === 'PROVIDER' ? { ...rest, notes } : rest));
   }
 
+  // Admins see the provider share of every line; providers see only their own. Locked once completed.
+  const earningLines = user.role === 'ADMIN'
+    ? services
+    : user.role === 'PROVIDER' ? services.filter((s) => s.provider_id === user.id) : [];
+  const lineEarnings = earningLines.length ? await earnings.earningsForLines(caseRow.id, earningLines) : new Map();
+
   const view = {
     case: shapeCaseRow(caseRow, user),
     services: services.map((service) => ({
       ...service,
       provider_avatar_url: toPublicMediaUrl(service.provider_avatar_url),
+      ...(user.role === 'ADMIN' ? { provider_earning: lineEarnings.get(service.id) || null } : {}),
+      ...(user.role === 'PROVIDER' && service.provider_id === user.id ? { my_earning: lineEarnings.get(service.id) || null } : {}),
       actions: serviceActions(service, caseRow, user),
     })),
     appointments: visibleAppointments,
@@ -415,10 +424,33 @@ async function listCases(user, query) {
   const viewer = { scope: user.role, userId: user.id };
   const { cases, total } = await caseRepo.listCases(viewer, filters);
 
+  // Providers see what each of their lines earns them (locked once completed, estimated before).
+  let myEarnings = new Map();
+  if (user.role === 'PROVIDER') {
+    const lineIds = cases.flatMap((row) => (row.my_services || []).map((line) => line.id));
+    const locked = lineIds.length
+      ? (await pool.query('SELECT case_service_id, amount, status FROM provider_earnings WHERE case_service_id = ANY($1::uuid[])', [lineIds])).rows
+      : [];
+    const openLineIds = new Set(cases.flatMap((row) => (row.my_services || [])
+      .filter((line) => earnings.ESTIMABLE_STATUSES.includes(line.status)).map((line) => line.id)));
+    const estimates = await earnings.estimateForLines(
+      lineIds.filter((id) => openLineIds.has(id) && !locked.some((row) => row.case_service_id === id))
+    );
+    myEarnings = new Map([
+      ...[...estimates].map(([id, estimate]) => [id, { amount: estimate.amount, locked: false, status: null }]),
+      ...locked.map((row) => [row.case_service_id, { amount: Number(row.amount), locked: true, status: row.status }]),
+    ]);
+  }
+
   const shaped = cases.map((row) => {
     if (user.role === 'PROVIDER') {
       const { final_amount, total_paid, remaining_amount, payment_status, is_patient_visible, ...rest } = row;
-      return rest;
+      const myServices = (rest.my_services || []).map((line) => ({ ...line, my_earning: myEarnings.get(line.id) || null }));
+      return {
+        ...rest,
+        my_services: myServices,
+        my_earning_total: toMoney(myServices.reduce((sum, line) => sum + (line.my_earning?.amount || 0), 0)),
+      };
     }
     if (user.role === 'PATIENT' && !row.is_patient_visible) {
       return { ...row, total_paid: null, remaining_amount: null };
@@ -576,6 +608,7 @@ async function providerTransition(caseId, serviceId, provider, action, { reason 
     const changes = { status: transition.to };
     if (action === 'reject') changes.provider_id = null;
     await caseRepo.updateServiceStatus(service.id, changes, client);
+    if (action === 'complete') await earnings.lockForCompletedLine(client, service, provider.id);
 
     if (action === 'reject' && caseRow.lead_provider_id === provider.id) {
       const remaining = await caseRepo.getServiceStatuses(caseId, client);

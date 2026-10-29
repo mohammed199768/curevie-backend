@@ -243,10 +243,43 @@ Provider object: `{ id, full_name, email, phone, type, is_active, is_available, 
 ## 6. Notifications & reports
 
 - `GET /notifications?page&limit&unread_only` → `{ data, pagination, unread_count }`; `PUT /notifications/read-all`; `PUT /notifications/:id/read`; `DELETE /notifications/:id`.
-  Notification `type`: `CASE_CREATED, CASE_ASSIGNED, CASE_UPDATED, CASE_COMPLETED, CASE_CANCELLED, CASE_CLOSED, APPOINTMENT_SCHEDULED, SERVICE_RATED, PAYMENT_RECEIVED, PAYMENT_PARTIAL, INVOICE_PAID, VIP_GRANTED, REPORT_PUBLISHED, CONTACT_MESSAGE`; `data.case_id` links to the case.
+  Notification `type`: `CASE_CREATED, CASE_ASSIGNED, CASE_UPDATED, CASE_COMPLETED, CASE_CANCELLED, CASE_CLOSED, APPOINTMENT_SCHEDULED, SERVICE_RATED, PAYMENT_RECEIVED, PAYMENT_PARTIAL, INVOICE_PAID, VIP_GRANTED, REPORT_PUBLISHED, CONTACT_MESSAGE, EARNINGS_PAID`; `data.case_id` links to the case.
 - `GET /reports/cases/financial?period=daily|monthly|yearly&year&month&from=YYYY-MM-DD&to=YYYY-MM-DD` (admin) →
   `{ period, summary: { total_invoices, paid_invoices, partial_invoices, pending_invoices, cancelled_invoices, gross_revenue, net_revenue, pending_revenue, total_discounts, collected_revenue, payments_count }, cases: {...counts by status}, payment_methods, top_services: [{ service_name, item_type, service_kind, count, revenue }], daily_breakdown: [{ date, cases, revenue, collected }], case_register }`.
   Dates are Amman local days; `collected_revenue` counts payments received in the window.
+
+---
+
+## 6a. Settings, CliQ and provider earnings
+
+Settings — `/settings`:
+- `GET /settings/public` → `{ data: { cliq: { alias, beneficiary_name, bank_name, note } | null } }` (null while CliQ is off or has no alias).
+- `GET /settings` (admin) → `{ data: { "payments.cliq": {...}, "earnings.default_share": {...} } }`
+- `PUT /settings/payments.cliq` (admin) `{ enabled, alias, beneficiary_name, bank_name?, note? }` (alias required while enabled)
+- `PUT /settings/earnings.default_share` (admin) `{ type: PERCENT|FIXED, value }` (PERCENT ≤ 100)
+
+Provider share on the catalog: services and packages accept `provider_share_type: PERCENT|FIXED|null` and
+`provider_share_value` (set or clear both together; null = default share). Only admins ever receive these two fields.
+The base is the line price the patient pays (`bundle_price`, after VIP discount); a FIXED share is capped at it.
+
+Earnings are locked when the provider completes a line and never change with later catalog edits.
+Case views add `services[].provider_earning` (admin, every line) and `services[].my_earning` (provider, own lines):
+`{ amount, locked, status: PENDING|PAID|null, share_type, share_value, share_source: ITEM|DEFAULT }` (estimate while `locked` is false).
+The provider case list adds `my_services[].my_earning` and `my_earning_total`.
+
+`/earnings`:
+| Method | Path | Who | Notes |
+|---|---|---|---|
+| GET | `/earnings/me?status&from&to&page&limit` | provider | `{ data: [Earning], summary: { pending_total, pending_count, paid_total, lifetime_total, jobs_count }, payouts, pagination }` |
+| GET | `/earnings?provider_id&status&from&to&page&limit` | admin | `{ data, summary, pagination }` |
+| GET | `/earnings/balances` | admin | `[{ provider_id, full_name, type, pending_total, pending_count, paid_total, jobs_count, last_payout_at }]` |
+| GET | `/earnings/payouts?provider_id` | admin | payouts with `earnings_count` |
+| POST | `/earnings/payouts` | admin | `{ provider_id, earning_ids?: uuid[] (default: all pending), method: CASH|BANK_TRANSFER|CLICK|OTHER, reference?, notes? }` |
+| PATCH | `/earnings/:id` | admin | `{ amount, reason }`, pending only; `calculated_amount` keeps the original value |
+
+Earning: `{ id, provider_id, provider_name, case_id, case_service_id, item_name, base_amount, share_type, share_value,
+share_source, amount, calculated_amount, adjustment_reason, adjusted_at, status, payout_id, paid_at, created_at, patient_name, area_name_ar, area_name_en }`.
+A payout notifies the provider (`EARNINGS_PAID`) and emits `earnings:updated` to them.
 
 ---
 
@@ -262,6 +295,7 @@ Server → client:
 | `case:created` | `{ case_id, at }` | admins |
 | `case:updated` | `{ case_id, status, event, case_service_id, service_status, at }` | admins, the case patient, involved providers |
 | `case:assigned` | `{ case_id, case_service_id }` | the assigned provider |
+| `earnings:updated` | `{ payout_id }` or `{ earning_id }` | the provider |
 | `notification_unread_updated` | `{ unread_count }` | recipient |
 | `chat_unread_updated` | `{ unread_count, room_id, case_id }` | chat participants |
 | `new_message` | `Message` | sockets that joined the room |

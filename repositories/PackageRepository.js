@@ -4,7 +4,7 @@ const BaseRepository = require('./BaseRepository');
 const PACKAGE_COLUMNS = `
   p.id, p.name, p.name_ar, p.name_en, p.description, p.description_ar, p.description_en,
   p.total_cost, p.category_id, c.name AS category_name, p.is_vip_exclusive, p.is_active,
-  p.times_ordered, p.image_url, p.created_at, p.updated_at,
+  p.times_ordered, p.image_url, p.created_at, p.updated_at, p.provider_share_type, p.provider_share_value,
   COALESCE(items.services, '[]'::json) AS services,
   COALESCE(items.services_count, 0)::int AS services_count,
   COALESCE(items.items_total, 0) AS items_total
@@ -29,7 +29,7 @@ const PACKAGE_JOINS = `
 
 const EDITABLE_FIELDS = [
   'name', 'name_ar', 'name_en', 'description', 'description_ar', 'description_en',
-  'total_cost', 'category_id', 'is_vip_exclusive', 'is_active',
+  'total_cost', 'category_id', 'is_vip_exclusive', 'is_active', 'provider_share_type', 'provider_share_value',
 ];
 
 class PackageRepository extends BaseRepository {
@@ -78,8 +78,8 @@ class PackageRepository extends BaseRepository {
   async create(data, db) {
     return this._queryOne(
       `INSERT INTO packages (name, name_ar, name_en, description, description_ar, description_en,
-                             total_cost, category_id, is_vip_exclusive)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                             total_cost, category_id, is_vip_exclusive, provider_share_type, provider_share_value)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
       [
         data.name,
@@ -91,6 +91,8 @@ class PackageRepository extends BaseRepository {
         data.total_cost,
         data.category_id || null,
         Boolean(data.is_vip_exclusive),
+        data.provider_share_type ?? null,
+        data.provider_share_value ?? null,
       ],
       db
     );

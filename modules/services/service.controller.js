@@ -10,8 +10,15 @@ const serviceRepo = new ServiceRepository(pool);
 
 const buildCacheKey = (prefix, query) => `${prefix}:${JSON.stringify(query || {})}`;
 
-function presentService(service) {
-  return service ? { ...service, image_url: toPublicMediaUrl(service.image_url) } : service;
+/** The provider share is internal: only admins see it. */
+function presentService(service, { admin = false } = {}) {
+  if (!service) return service;
+  const shaped = { ...service, image_url: toPublicMediaUrl(service.image_url) };
+  if (!admin) {
+    delete shaped.provider_share_type;
+    delete shaped.provider_share_value;
+  }
+  return shaped;
 }
 
 function auditCatalog(req, action, targetType, targetId, details) {
@@ -83,7 +90,10 @@ async function listServices(req, res) {
 
   const { page, limit, offset } = paginate(req.query);
   const { data, total } = await serviceRepo.listServices(filters, { limit, offset });
-  const response = { data: data.map(presentService), pagination: paginationMeta(total, page, limit) };
+  const response = {
+    data: data.map((service) => presentService(service, { admin: isAdmin })),
+    pagination: paginationMeta(total, page, limit),
+  };
 
   await cache.set(cacheKey, response, 300);
   return res.json(response);
@@ -94,14 +104,14 @@ async function getServiceById(req, res) {
   if (!service || (!service.is_active && req.user?.role !== 'ADMIN')) {
     throw new AppError('Service not found', 404, 'SERVICE_NOT_FOUND');
   }
-  return res.json(presentService(service));
+  return res.json(presentService(service, { admin: req.user?.role === 'ADMIN' }));
 }
 
 async function createService(req, res) {
   const created = await serviceRepo.createService(req.body);
   auditCatalog(req, 'SERVICE_CREATED', 'service', created.id);
   await cache.del('services:*');
-  return res.status(201).json(presentService(created));
+  return res.status(201).json(presentService(created, { admin: true }));
 }
 
 async function updateService(req, res) {
@@ -110,7 +120,7 @@ async function updateService(req, res) {
   if (!result.row) throw new AppError('Service not found', 404, 'SERVICE_NOT_FOUND');
   auditCatalog(req, 'SERVICE_UPDATED', 'service', req.params.id, req.body);
   await cache.del('services:*');
-  return res.json(presentService(result.row));
+  return res.json(presentService(result.row, { admin: true }));
 }
 
 async function deactivateService(req, res) {
@@ -118,7 +128,7 @@ async function deactivateService(req, res) {
   if (!row) throw new AppError('Service not found', 404, 'SERVICE_NOT_FOUND');
   auditCatalog(req, 'SERVICE_DEACTIVATED', 'service', req.params.id);
   await cache.del('services:*');
-  return res.json({ message: 'Service deactivated successfully', service: presentService(row) });
+  return res.json({ message: 'Service deactivated successfully', service: presentService(row, { admin: true }) });
 }
 
 async function uploadServiceImage(req, res) {
@@ -132,7 +142,7 @@ async function uploadServiceImage(req, res) {
   if (service.image_url) await deletePublicMedia(service.image_url);
   auditCatalog(req, 'SERVICE_IMAGE_UPDATED', 'service', req.params.id);
   await cache.del('services:*');
-  return res.json(presentService(updated));
+  return res.json(presentService(updated, { admin: true }));
 }
 
 module.exports = {

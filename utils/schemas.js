@@ -122,7 +122,23 @@ const categorySchema = Joi.object({
   description: Joi.string().max(500).trim().allow('', null),
 });
 
-const createServiceSchema = Joi.object({
+// Provider share of a catalog item: PERCENT of the line price or a FIXED amount; both null = default share.
+const providerShareFields = {
+  provider_share_type: Joi.string().valid('PERCENT', 'FIXED').allow(null),
+  provider_share_value: Joi.number().min(0).precision(3).allow(null)
+    .when('provider_share_type', { is: 'PERCENT', then: Joi.number().max(100) }),
+};
+const withProviderShare = (schema) => schema.custom((value, helpers) => {
+  const hasType = value.provider_share_type !== undefined && value.provider_share_type !== null;
+  const hasValue = value.provider_share_value !== undefined && value.provider_share_value !== null;
+  const touched = 'provider_share_type' in value || 'provider_share_value' in value;
+  if (touched && hasType !== hasValue) {
+    return helpers.message('provider_share_type and provider_share_value must be set (or cleared) together');
+  }
+  return value;
+});
+
+const createServiceSchema = withProviderShare(Joi.object({
   name: Joi.string().min(2).max(150).required().trim(),
   name_ar: Joi.string().trim().max(200).allow('', null).optional(),
   name_en: Joi.string().trim().max(200).allow('', null).optional(),
@@ -133,9 +149,10 @@ const createServiceSchema = Joi.object({
   service_kind: Joi.string().valid('MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB').default('MEDICAL'),
   category_id: uuid,
   is_vip_exclusive: Joi.boolean().default(false),
-});
+  ...providerShareFields,
+}));
 
-const updateServiceSchema = Joi.object({
+const updateServiceSchema = withProviderShare(Joi.object({
   name: Joi.string().min(2).max(150).trim(),
   name_ar: Joi.string().trim().max(200).allow('', null).optional(),
   name_en: Joi.string().trim().max(200).allow('', null).optional(),
@@ -147,7 +164,8 @@ const updateServiceSchema = Joi.object({
   category_id: uuid,
   is_vip_exclusive: Joi.boolean(),
   is_active: Joi.boolean(),
-}).min(1);
+  ...providerShareFields,
+}).min(1));
 
 // =============================================
 // PACKAGES (bundles of services, incl. lab)
@@ -164,20 +182,21 @@ const packageFields = {
   is_vip_exclusive: Joi.boolean(),
   // Ordered list of the services in the bundle.
   service_ids: Joi.array().items(uuid).min(1).max(50).unique(),
+  ...providerShareFields,
 };
 
-const createPackageSchema = Joi.object({
+const createPackageSchema = withProviderShare(Joi.object({
   ...packageFields,
   name: packageFields.name.required(),
   total_cost: packageFields.total_cost.required(),
   service_ids: packageFields.service_ids.required(),
   is_vip_exclusive: packageFields.is_vip_exclusive.default(false),
-});
+}));
 
-const updatePackageSchema = Joi.object({
+const updatePackageSchema = withProviderShare(Joi.object({
   ...packageFields,
   is_active: Joi.boolean(),
-}).min(1);
+}).min(1));
 
 // =============================================
 // QUERY PARAMS

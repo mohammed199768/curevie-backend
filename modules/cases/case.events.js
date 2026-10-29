@@ -242,8 +242,20 @@ function reportPublished({ caseId, patientId }) {
   }));
 }
 
+/** Payments, adjustments or finalization changed the invoice: every open screen refetches it. */
+function invoiceChanged({ caseRow, event }) {
+  emitCaseUpdated({
+    caseId: caseRow.id,
+    status: caseRow.status,
+    patientId: caseRow.patient_id,
+    providerIds: [caseRow.lead_provider_id],
+    event,
+  });
+}
+
 module.exports = {
   emitCaseUpdated,
+  invoiceChanged,
   caseCreated,
   providersAssigned,
   serviceProgressed,

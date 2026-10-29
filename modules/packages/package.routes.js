@@ -29,10 +29,13 @@ const listQuerySchema = Joi.object({
   is_vip_exclusive: Joi.boolean(),
 });
 
-function present(pkg) {
+/** The provider share is internal: only admins see it. */
+function present(pkg, { admin = false } = {}) {
   if (!pkg) return pkg;
+  const { provider_share_type: shareType, provider_share_value: shareValue, ...rest } = pkg;
   return {
-    ...pkg,
+    ...rest,
+    ...(admin ? { provider_share_type: shareType, provider_share_value: shareValue } : {}),
     image_url: toPublicMediaUrl(pkg.image_url),
     // What the patient saves compared to ordering the services one by one.
     savings: Math.max(0, Number(pkg.items_total) - Number(pkg.total_cost)).toFixed(3),
@@ -68,7 +71,7 @@ router.get(
 
     const { page, limit, offset } = paginate(req.query);
     const { data, total } = await packageRepo.list(filters, { limit, offset });
-    const response = { data: data.map(present), pagination: paginationMeta(total, page, limit) };
+    const response = { data: data.map((pkg) => present(pkg, { admin: isAdmin })), pagination: paginationMeta(total, page, limit) };
     await cache.set(cacheKey, response, 300);
     return res.json(response);
   })
@@ -84,7 +87,7 @@ router.get(
     if (!pkg || (!pkg.is_active && req.user?.role !== 'ADMIN')) {
       throw new AppError('Package not found', 404, 'PACKAGE_NOT_FOUND');
     }
-    return res.json(present(pkg));
+    return res.json(present(pkg, { admin: req.user?.role === 'ADMIN' }));
   })
 );
 
@@ -106,7 +109,7 @@ router.post(
 
     auditPackage(req, 'PACKAGE_CREATED', created.id);
     await cache.del(`${CACHE_PREFIX}*`);
-    return res.status(201).json(present(await packageRepo.getById(created.id)));
+    return res.status(201).json(present(await packageRepo.getById(created.id), { admin: true }));
   })
 );
 
@@ -129,7 +132,7 @@ router.put(
 
     auditPackage(req, 'PACKAGE_UPDATED', req.params.id);
     await cache.del(`${CACHE_PREFIX}*`);
-    return res.json(present(await packageRepo.getById(req.params.id)));
+    return res.json(present(await packageRepo.getById(req.params.id), { admin: true }));
   })
 );
 
@@ -151,7 +154,7 @@ router.put(
     if (pkg.image_url) await deletePublicMedia(pkg.image_url);
     auditPackage(req, 'PACKAGE_IMAGE_UPDATED', req.params.id);
     await cache.del(`${CACHE_PREFIX}*`);
-    return res.json(present(await packageRepo.getById(req.params.id)));
+    return res.json(present(await packageRepo.getById(req.params.id), { admin: true }));
   })
 );
 

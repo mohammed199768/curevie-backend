@@ -10,6 +10,7 @@
  *   GET    /:id/invoice/pdf                   invoice PDF
  *
  * All totals are recomputed by caseService.recomputeInvoice; nothing here edits them by hand.
+ * Every change emits case:updated so the admin, patient and lead provider screens refresh live.
  */
 const express = require('express');
 const Joi = require('joi');
@@ -23,6 +24,7 @@ const { logger } = require('../../utils/logger');
 const { generateCaseInvoicePdf } = require('../../utils/pdf/case-invoice.generator');
 const notificationService = require('../notifications/notification.service');
 const caseService = require('./case.service');
+const events = require('./case.events');
 const { CASE_STATUS } = require('./case.constants');
 
 const router = express.Router({ mergeParams: true });
@@ -228,6 +230,7 @@ router.post(
       return { caseRow, payment: rows[0], invoice: updated };
     });
 
+    events.invoiceChanged({ caseRow: result.caseRow, event: 'PAYMENT_RECORDED' });
     notificationService.notifySafely('payment_received', () => notificationService.notifyPaymentReceived({
       caseId,
       invoiceId: result.invoice.id,
@@ -258,7 +261,7 @@ router.delete(
   asyncHandler(async (req, res) => {
     const { id: caseId, paymentId } = req.params;
 
-    const invoice = await caseService.withTransaction(async (client) => {
+    const { caseRow, invoice } = await caseService.withTransaction(async (client) => {
       const caseRow = await caseRepo.lockCase(caseId, client);
       if (!caseRow) throw new AppError('Case not found', 404, 'NOT_FOUND');
       const locked = await caseRepo.lockInvoice(caseId, client);
@@ -277,9 +280,10 @@ router.delete(
         event_type: 'PAYMENT_DELETED',
         notes: Number(rows[0].amount).toFixed(3),
       }, client);
-      return caseService.recomputeInvoice(client, caseId, caseRow.status);
+      return { caseRow, invoice: await caseService.recomputeInvoice(client, caseId, caseRow.status) };
     });
 
+    events.invoiceChanged({ caseRow, event: 'PAYMENT_DELETED' });
     return res.json({
       message: 'Payment deleted and invoice totals recalculated',
       summary: {
@@ -328,9 +332,10 @@ router.post(
         event_type: 'INVOICE_ADJUSTED',
         notes: `${req.body.type} ${amount.toFixed(3)}: ${req.body.reason}`,
       }, client);
-      return { adjustment: rows[0], invoice: updated };
+      return { caseRow, adjustment: rows[0], invoice: updated };
     });
 
+    events.invoiceChanged({ caseRow: result.caseRow, event: 'INVOICE_ADJUSTED' });
     return res.status(201).json({
       adjustment: result.adjustment,
       invoice_summary: {
@@ -359,7 +364,17 @@ router.put(
       [req.user.id, req.params.id]
     );
 
-    if (!rows[0]) {
+    if (rows[0]) {
+      const caseRow = await caseRepo.findCaseById(req.params.id);
+      await caseRepo.addLifecycleEvent({
+        case_id: req.params.id,
+        actor_id: req.user.id,
+        actor_role: 'ADMIN',
+        event_type: 'INVOICE_FINALIZED',
+        notes: Number(rows[0].final_amount).toFixed(3),
+      });
+      events.invoiceChanged({ caseRow, event: 'INVOICE_FINALIZED' });
+    } else {
       const existing = await caseRepo.findInvoiceByCase(req.params.id);
       if (!existing) throw new AppError('Invoice not found', 404, 'NOT_FOUND');
       return res.status(409).json({

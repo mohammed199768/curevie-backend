@@ -70,6 +70,8 @@ app.use('/api/v1/areas', require('./modules/areas/area.routes'));
 app.use('/api/v1/services', require('./modules/services/service.routes'));
 app.use('/api/v1/packages', require('./modules/packages/package.routes'));
 app.use('/api/v1/cases', require('./modules/cases/case.routes'));
+app.use('/api/v1/earnings', require('./modules/earnings/earnings.routes'));
+app.use('/api/v1/settings', require('./modules/settings/settings.routes'));
 app.use('/api/v1/analytics', require('./modules/analytics/analytics.routes'));
 app.use('/api/v1/contact', require('./modules/contact/contact.routes'));
 app.use('/api/v1/notifications', require('./modules/notifications/notification.routes'));

@@ -52,6 +52,10 @@ const strings = {
       status_paid: 'الفاتورة مدفوعة بالكامل.',
       status_remaining: 'المتبقي: {remaining} دينار.',
     },
+    earnings: {
+      paid_title: 'تم صرف مستحقاتك',
+      paid_body: 'تم صرف {amount} دينار عن {count} خدمة.',
+    },
     vip: {
       title: 'مبروك! أصبحت عضواً مميزاً',
       body: 'تم تفعيل عضويتك المميزة مع خصم {discount}% على جميع الطلبات.',

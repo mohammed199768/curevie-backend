@@ -361,6 +361,175 @@ test('a case closes without any provider upload or medical report', { skip }, as
   assert.equal(invoice.status, 200, 'the patient gets the invoice even without a report');
 });
 
+test('payment status follows every payment, deletion, adjustment and finalization live', { skip }, async () => {
+  const order = await api('POST', '/cases', {
+    token: tokens.patient,
+    body: { area_id: ids.area, items: [{ type: 'SERVICE', id: ids['Home doctor visit'] }] },
+  });
+  const caseId = order.body.data.case.id;
+  const lineId = order.body.data.services[0].id;
+  assert.equal(order.body.data.invoice.payment_status, 'PENDING');
+  await api('POST', `/cases/${caseId}/assign-team`, {
+    token: tokens.admin,
+    body: { assignments: [{ case_service_id: lineId, provider_id: ids['doc.area@test.io'] }], lead_provider_id: ids['doc.area@test.io'] },
+  });
+
+  const lead = socketClient(tokens.docArea);
+  await lead.next('connect');
+  const status = async () => (await api('GET', `/cases/${caseId}/invoice`, { token: tokens.admin })).body.invoice;
+  const pay = (amount, method) => api('POST', `/cases/${caseId}/invoice/payments`, { token: tokens.admin, body: { amount, method } });
+
+  const first = await pay(10, 'CASH');
+  assert.equal(first.body.summary.payment_status, 'PARTIAL');
+  const live = await lead.next('case:updated');
+  assert.equal(live.case_id, caseId);
+  assert.equal(live.event, 'PAYMENT_RECORDED');
+
+  const second = await pay(15, 'CLICK');
+  assert.equal(second.body.summary.payment_status, 'PAID');
+  assert.equal((await status()).payment_method, 'CLICK');
+  await lead.next('case:updated');
+
+  await api('DELETE', `/cases/${caseId}/invoice/payments/${second.body.payment.id}`, { token: tokens.admin });
+  const afterDelete = await status();
+  assert.equal(afterDelete.payment_status, 'PARTIAL');
+  assert.equal(Number(afterDelete.remaining_amount), 15);
+  assert.equal(afterDelete.payment_method, null, 'method is cleared once the invoice is no longer paid');
+  assert.equal((await lead.next('case:updated')).event, 'PAYMENT_DELETED');
+
+  await pay(15, 'CARD');
+  await lead.next('case:updated');
+  await api('POST', `/cases/${caseId}/invoice/adjustments`, {
+    token: tokens.admin, body: { amount: 5, type: 'SURCHARGE', reason: 'extra supplies' },
+  });
+  const surcharged = await status();
+  assert.equal(surcharged.payment_status, 'PARTIAL', 'a surcharge reopens a paid invoice');
+  assert.equal(Number(surcharged.remaining_amount), 5);
+  assert.equal((await lead.next('case:updated')).event, 'INVOICE_ADJUSTED');
+
+  await pay(5, 'CASH');
+  await lead.next('case:updated');
+  const finalized = await api('PUT', `/cases/${caseId}/invoice/finalize`, { token: tokens.admin });
+  assert.equal(finalized.status, 200);
+  assert.equal((await lead.next('case:updated')).event, 'INVOICE_FINALIZED');
+  const payments = (await api('GET', `/cases/${caseId}/invoice`, { token: tokens.admin })).body.payments;
+  const locked = await api('DELETE', `/cases/${caseId}/invoice/payments/${payments[0].id}`, { token: tokens.admin });
+  assert.equal(locked.body.code, 'INVOICE_FINALIZED');
+  const events = await pool.query('SELECT event_type FROM case_lifecycle_events WHERE case_id = $1 ORDER BY created_at', [caseId]);
+  assert.ok(events.rows.some((row) => row.event_type === 'INVOICE_FINALIZED'));
+
+  const patientView = (await api('GET', `/cases/${caseId}`, { token: tokens.patient })).body.data.invoice;
+  assert.deepEqual(Object.keys(patientView).sort(), ['final_amount', 'is_patient_visible', 'original_amount', 'payment_status'],
+    'before closing, the patient sees only the summary');
+  assert.equal(patientView.payment_status, 'PAID');
+  lead.close();
+  await api('POST', `/cases/${caseId}/services/${lineId}/cancel`, { token: tokens.admin, body: {} }).catch(() => {});
+});
+
+test('CliQ details are edited by the admin and shown publicly only when complete', { skip }, async () => {
+  assert.equal((await api('GET', '/settings/public')).body.data.cliq, null, 'no alias yet, so nothing to show');
+  assert.equal((await api('PUT', '/settings/payments.cliq', {
+    token: tokens.patient, body: { enabled: true, alias: 'X', beneficiary_name: 'Y' },
+  })).status, 403);
+  const invalid = await api('PUT', '/settings/payments.cliq', {
+    token: tokens.admin, body: { enabled: true, alias: '', beneficiary_name: 'Curevie' },
+  });
+  assert.equal(invalid.status, 400);
+  const saved = await api('PUT', '/settings/payments.cliq', {
+    token: tokens.admin, body: { enabled: true, alias: 'CUREVIE', beneficiary_name: 'Curevie Home Care', bank_name: 'Test Bank' },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const cliq = (await api('GET', '/settings/public')).body.data.cliq;
+  assert.equal(cliq.alias, 'CUREVIE');
+  assert.equal(cliq.beneficiary_name, 'Curevie Home Care');
+  await api('PUT', '/settings/payments.cliq', { token: tokens.admin, body: { enabled: false, alias: 'CUREVIE', beneficiary_name: 'Curevie Home Care' } });
+  assert.equal((await api('GET', '/settings/public')).body.data.cliq, null, 'switched off');
+});
+
+test('provider earnings: share per item or default, locked at completion, adjusted and paid out', { skip }, async () => {
+  const visit = ids['Home doctor visit'];
+  const setShare = (body) => api('PUT', `/services/${visit}`, { token: tokens.admin, body });
+  assert.equal((await setShare({ provider_share_type: 'PERCENT', provider_share_value: 120 })).status, 400);
+  assert.equal((await setShare({ provider_share_type: 'FIXED', provider_share_value: 10 })).status, 200);
+
+  const publicList = (await api('GET', '/services')).body.data.find((s) => s.id === visit);
+  assert.equal('provider_share_type' in publicList, false, 'the share is never public');
+  const adminList = (await api('GET', '/services', { token: tokens.admin })).body.data.find((s) => s.id === visit);
+  assert.equal(adminList.provider_share_type, 'FIXED');
+
+  const order = await api('POST', '/cases', {
+    token: tokens.patient,
+    body: { area_id: ids.area, items: [{ type: 'SERVICE', id: visit }, { type: 'SERVICE', id: ids.labTest }] },
+  });
+  const caseId = order.body.data.case.id;
+  const visitLine = order.body.data.services.find((s) => s.service_id === visit).id;
+  const labLine = order.body.data.services.find((s) => s.service_id === ids.labTest).id;
+  await api('POST', `/cases/${caseId}/assign-team`, {
+    token: tokens.admin,
+    body: {
+      assignments: [
+        { case_service_id: visitLine, provider_id: ids['doc.area@test.io'] },
+        { case_service_id: labLine, provider_id: ids['doc.area@test.io'] },
+      ],
+      lead_provider_id: ids['doc.area@test.io'],
+    },
+  });
+
+  const before = (await api('GET', `/cases/${caseId}`, { token: tokens.docArea })).body.data.services;
+  const visitEstimate = before.find((s) => s.id === visitLine).my_earning;
+  assert.deepEqual([visitEstimate.amount, visitEstimate.locked, visitEstimate.share_source], [10, false, 'ITEM']);
+  const labEstimate = before.find((s) => s.id === labLine).my_earning;
+  assert.deepEqual([labEstimate.amount, labEstimate.share_source], [5.25, 'DEFAULT'], '70% default of 7.5');
+  assert.equal((await api('GET', `/cases/${caseId}`, { token: tokens.patient })).body.data.services[0].my_earning, undefined);
+
+  const listed = (await api('GET', '/cases?limit=100', { token: tokens.docArea })).body.data.cases.find((c) => c.id === caseId);
+  assert.equal(listed.my_earning_total, 15.25);
+
+  for (const line of [visitLine, labLine]) {
+    for (const step of ['accept', 'start', 'complete']) {
+      assert.equal((await api('PUT', `/cases/${caseId}/services/${line}/${step}`, { token: tokens.docArea })).status, 200);
+    }
+  }
+  await setShare({ provider_share_type: 'PERCENT', provider_share_value: 50 });
+  const adminView = (await api('GET', `/cases/${caseId}`, { token: tokens.admin })).body.data.services;
+  assert.deepEqual(
+    [adminView.find((s) => s.id === visitLine).provider_earning.amount, adminView.find((s) => s.id === visitLine).provider_earning.locked],
+    [10, true],
+    'later catalog changes do not touch a locked earning'
+  );
+
+  const mine = await api('GET', '/earnings/me?status=PENDING', { token: tokens.docArea });
+  assert.equal(mine.status, 200, JSON.stringify(mine.body));
+  const row = mine.body.data.find((e) => e.case_service_id === labLine);
+  assert.equal(Number(row.amount), 5.25);
+
+  const adjusted = await api('PATCH', `/earnings/${row.id}`, { token: tokens.admin, body: { amount: 6, reason: 'night visit' } });
+  assert.equal(Number(adjusted.body.data.amount), 6);
+  assert.equal(Number(adjusted.body.data.calculated_amount), 5.25, 'the calculated amount is kept for review');
+  assert.equal((await api('PATCH', `/earnings/${row.id}`, { token: tokens.docArea, body: { amount: 99, reason: 'me' } })).status, 403);
+
+  const balances = (await api('GET', '/earnings/balances', { token: tokens.admin })).body.data;
+  const docBalance = balances.find((b) => b.provider_id === ids['doc.area@test.io']);
+  assert.ok(docBalance.pending_total >= 16);
+
+  const payout = await api('POST', '/earnings/payouts', {
+    token: tokens.admin, body: { provider_id: ids['doc.area@test.io'], earning_ids: [row.id], method: 'CLICK', reference: 'TX-1' },
+  });
+  assert.equal(payout.status, 201, JSON.stringify(payout.body));
+  assert.equal(Number(payout.body.data.payout.amount), 6);
+  assert.equal((await api('PATCH', `/earnings/${row.id}`, { token: tokens.admin, body: { amount: 1, reason: 'late fix' } })).body.code, 'EARNING_PAID');
+  const again = await api('POST', '/earnings/payouts', {
+    token: tokens.admin, body: { provider_id: ids['doc.area@test.io'], earning_ids: [row.id], method: 'CASH' },
+  });
+  assert.equal(again.body.code, 'EARNINGS_NOT_PENDING', 'an earning is never paid twice');
+
+  const after = await api('GET', '/earnings/me', { token: tokens.docArea });
+  assert.ok(after.body.payouts.some((p) => p.id === payout.body.data.payout.id));
+  assert.equal(after.body.payouts[0].created_by, undefined);
+
+  await setShare({ provider_share_type: null, provider_share_value: null });
+});
+
 test('public catalog counts match what a visitor can order', { skip }, async () => {
   const res = await api('GET', '/services/counts');
   assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -531,7 +700,9 @@ test('admin listings and the financial report', { skip }, async () => {
 
   const report = await api('GET', '/reports/cases/financial?period=yearly', { token: tokens.admin });
   assert.equal(report.status, 200, JSON.stringify(report.body));
-  assert.equal(Number(report.body.summary.collected_revenue), 25);
+  const collected = await pool.query("SELECT COALESCE(SUM(amount), 0) AS total FROM case_payment_records WHERE approval_status = 'APPROVED'");
+  assert.equal(Number(report.body.summary.collected_revenue), Number(collected.rows[0].total));
+  assert.ok(Number(collected.rows[0].total) > 0);
 
   const areas = await api('GET', '/areas');
   assert.equal(areas.body.data.length, 39);
