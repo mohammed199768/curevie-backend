@@ -14,7 +14,7 @@ const ALLOWED_EVENT_TYPES = new Set([
   'request_created',
 ]);
 
-const VALID_SERVICE_KINDS = new Set(['MEDICAL', 'RADIOLOGY', 'LAB', 'PACKAGE']);
+const VALID_SERVICE_KINDS = new Set(['MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB', 'PACKAGE']);
 const VALID_CHANNELS = new Set(['phone', 'email', 'whatsapp']);
 
 function configureAnalyticsService(repository) {

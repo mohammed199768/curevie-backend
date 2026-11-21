@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { audit } = require('../utils/logger');
-const { isTokenBlacklisted } = require('../utils/cache');
+const { isTokenBlacklisted, markSessionsRevoked, sessionsRevokedAt } = require('../utils/cache');
 
 // Fail fast when secrets are missing or reused: the app must never sign tokens with a weak key.
 if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
@@ -13,6 +13,11 @@ if (process.env.JWT_SECRET === process.env.JWT_REFRESH_SECRET) {
 
 const ACCESS_TOKEN_TTL = process.env.JWT_EXPIRES_IN || '5m';
 const REFRESH_TOKEN_TTL_DAYS = 30;
+// Lifetime of an access token in seconds (JWT_EXPIRES_IN may be "5m", "1h", or a number).
+const ACCESS_TOKEN_TTL_SECONDS = (() => {
+  const probe = jwt.decode(jwt.sign({}, 'ttl-probe', { expiresIn: ACCESS_TOKEN_TTL }));
+  return probe.exp - probe.iat;
+})();
 
 const generateAccessToken = (payload) => jwt.sign(
   { ...payload, jti: randomUUID() },
@@ -26,15 +31,31 @@ const generateRefreshToken = (payload) => jwt.sign(
   { expiresIn: `${REFRESH_TOKEN_TTL_DAYS}d` }
 );
 
-/** Verifies a bearer token and rejects blacklisted ones. Returns the payload or throws. */
+/**
+ * Verifies a bearer token and rejects revoked ones: the token itself (logout) or every token of
+ * its account issued before an account-wide revocation. Returns the payload or throws.
+ */
 async function verifyAccessToken(token) {
   const decoded = jwt.verify(token, process.env.JWT_SECRET);
-  if (decoded.jti && await isTokenBlacklisted(decoded.jti)) {
+  const [blacklisted, revokedAt] = await Promise.all([
+    decoded.jti ? isTokenBlacklisted(decoded.jti) : false,
+    sessionsRevokedAt(decoded.role, decoded.id),
+  ]);
+  if (blacklisted || (revokedAt && decoded.iat <= revokedAt)) {
     const error = new Error('Token revoked');
     error.name = 'TokenRevokedError';
     throw error;
   }
   return decoded;
+}
+
+/**
+ * Ends every live session of an account now: rejects its current access tokens and drops its
+ * sockets. Callers revoke the refresh tokens themselves (AuthRepository.revokeAllUserTokens).
+ */
+async function revokeAccessTokens(userId, role) {
+  await markSessionsRevoked(role, userId, ACCESS_TOKEN_TTL_SECONDS);
+  require('../utils/socket').disconnectUser(userId);
 }
 
 function readBearer(req) {
@@ -107,4 +128,5 @@ module.exports = {
   generateAccessToken,
   generateRefreshToken,
   verifyAccessToken,
+  revokeAccessTokens,
 };

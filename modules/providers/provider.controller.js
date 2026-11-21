@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const pool = require('../../config/db');
 const ProviderRepository = require('../../repositories/ProviderRepository');
-const AuthRepository = require('../../repositories/AuthRepository');
+const authService = require('../admin/auth.service');
 const caseService = require('../cases/case.service');
 const { AppError } = require('../../middlewares/errorHandler');
 const { audit } = require('../../utils/logger');
@@ -9,7 +9,6 @@ const { paginate, paginationMeta } = require('../../utils/pagination');
 const { uploadPublicMedia, deletePublicMedia, toPublicMediaUrl } = require('../../utils/storage');
 
 const providerRepo = new ProviderRepository(pool);
-const authRepo = new AuthRepository(pool);
 
 // Fields a provider may change on their own profile; everything else is admin-only.
 const SELF_EDITABLE_FIELDS = ['full_name', 'phone', 'is_available'];
@@ -98,7 +97,7 @@ async function updateProvider(req, res) {
   });
 
   // Disabling an account ends its sessions immediately.
-  if (fields.is_active === false) await authRepo.revokeAllUserTokens(req.params.id, 'PROVIDER');
+  if (fields.is_active === false) await authService.endAllSessions(req.params.id, 'PROVIDER');
 
   auditProvider(req, 'PROVIDER_UPDATED', Object.keys(payload));
   return res.json(present(await providerRepo.getById(req.params.id)));
@@ -121,7 +120,7 @@ async function deleteProvider(req, res) {
   }
 
   const row = await providerRepo.softDelete(req.params.id);
-  await authRepo.revokeAllUserTokens(req.params.id, 'PROVIDER');
+  await authService.endAllSessions(req.params.id, 'PROVIDER');
   auditProvider(req, 'PROVIDER_DELETED');
   return res.json({ message: 'Provider deleted successfully', provider: row });
 }

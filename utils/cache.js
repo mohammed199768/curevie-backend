@@ -185,4 +185,47 @@ async function isTokenBlacklisted(jti) {
   }
 }
 
-module.exports = { get, set, del, flush, ping, blacklistToken, isTokenBlacklisted, getClient };
+// Account-wide revocation: key revoked:{role}:{userId} holds the unix second at which every session
+// of that account ended. Access tokens issued at or before it are rejected, so disabling or deleting
+// an account, or changing its password, takes effect at once instead of when the token expires.
+const SESSIONS_REVOKED_PREFIX = 'revoked:';
+
+async function markSessionsRevoked(role, userId, ttlSeconds) {
+  if (!role || !userId || !ttlSeconds || ttlSeconds <= 0) return;
+  const redis = await getClient();
+  if (!redis) {
+    logger.error('Redis unavailable for session revocation write', { userId, role });
+    return;
+  }
+  await redis.set(`${SESSIONS_REVOKED_PREFIX}${role}:${userId}`, String(Math.floor(Date.now() / 1000)), 'EX', ttlSeconds);
+}
+
+/** Unix second at which all sessions of the account were ended, or null. Fails secure like the blacklist. */
+async function sessionsRevokedAt(role, userId) {
+  if (!role || !userId) return null;
+  const redis = await getClient();
+  if (!redis) {
+    if (FAIL_SECURE) logger.error('Redis unavailable for session revocation check, failing secure', { userId, role });
+    return FAIL_SECURE ? Infinity : null;
+  }
+  try {
+    const value = await redis.get(`${SESSIONS_REVOKED_PREFIX}${role}:${userId}`);
+    return value ? Number(value) : null;
+  } catch (err) {
+    logger.error('Redis session revocation read failed', { userId, role, error: err.message });
+    return FAIL_SECURE ? Infinity : null;
+  }
+}
+
+module.exports = {
+  get,
+  set,
+  del,
+  flush,
+  ping,
+  blacklistToken,
+  isTokenBlacklisted,
+  markSessionsRevoked,
+  sessionsRevokedAt,
+  getClient,
+};

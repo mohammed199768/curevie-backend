@@ -1,7 +1,6 @@
 const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const Redis = require('ioredis');
-const jwt = require('jsonwebtoken');
 const xss = require('xss');
 const { logger } = require('./logger');
 const { isOriginAllowed } = require('../config/cors');
@@ -27,6 +26,13 @@ function emitToUser(userId, event, payload = {}) {
 function emitToRole(role, event, payload = {}) {
   if (!io || !role) return false;
   io.to(getRoleRoom(role)).emit(event, payload);
+  return true;
+}
+
+/** Closes every socket of a user (on all backend instances); used when an account's sessions end. */
+function disconnectUser(userId) {
+  if (!io || !userId) return false;
+  io.in(getUserRoom(userId)).disconnectSockets(true);
   return true;
 }
 
@@ -70,15 +76,12 @@ async function authenticateSocket(socket, next) {
   if (!token) return next(new Error('Authentication required'));
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.jti) {
-      const { isTokenBlacklisted } = require('./cache');
-      if (await isTokenBlacklisted(decoded.jti)) return next(new Error('Token revoked'));
-    }
-    socket.user = decoded;
+    // Same checks as REST requests, including account-wide revocation.
+    const { verifyAccessToken } = require('../middlewares/auth');
+    socket.user = await verifyAccessToken(token);
     return next();
-  } catch (_) {
-    return next(new Error('Invalid token'));
+  } catch (err) {
+    return next(new Error(err.name === 'TokenRevokedError' ? 'Token revoked' : 'Invalid token'));
   }
 }
 
@@ -196,6 +199,7 @@ module.exports = {
   emitToUser,
   emitToRole,
   emitToChatRoom,
+  disconnectUser,
   broadcastChatUnread,
   getUserRoom,
 };

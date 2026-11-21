@@ -25,6 +25,11 @@ Points, coupons, workflow stages/tasks, lab result entry and culture results no 
 | PUT | `/auth/change-password` | `{ current_password, new_password, confirm_password }`. All sessions are revoked → log in again. |
 | GET | `/auth/me` | current user (shape below) |
 
+Ending sessions takes effect at once: change-password, logout-all, disabling or deleting a provider, and
+deleting a patient reject every access token the account already holds (401 `TOKEN_REVOKED` on the next
+request) and disconnect its sockets (`connect_error` "Token revoked" on reconnect). Clients then refresh,
+which fails, and send the user to login.
+
 `user` shapes:
 - ADMIN `{ id, email, role, full_name }`
 - PROVIDER `{ id, email, role, full_name, type, is_active, is_available, phone, avatar_url }`

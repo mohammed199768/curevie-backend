@@ -1,7 +1,12 @@
 const bcrypt = require('bcryptjs');
 const pool = require('../../config/db');
 const AuthRepository = require('../../repositories/AuthRepository');
-const { generateAccessToken, generateRefreshToken, REFRESH_TOKEN_TTL_DAYS } = require('../../middlewares/auth');
+const {
+  generateAccessToken,
+  generateRefreshToken,
+  revokeAccessTokens,
+  REFRESH_TOKEN_TTL_DAYS,
+} = require('../../middlewares/auth');
 
 const authRepo = new AuthRepository(pool);
 
@@ -43,7 +48,14 @@ async function changeUserPassword({ userId, role, currentPassword, newPassword }
     await authRepo.updatePassword(userId, role, hashedPassword, client);
     await authRepo.revokeAllUserTokens(userId, role, client);
   });
+  await revokeAccessTokens(userId, role);
   return { success: true };
+}
+
+/** Ends every session of an account at once: refresh tokens, live access tokens and sockets. */
+async function endAllSessions(userId, role) {
+  await authRepo.revokeAllUserTokens(userId, role);
+  await revokeAccessTokens(userId, role);
 }
 
 module.exports = {
@@ -52,4 +64,5 @@ module.exports = {
   verifyCredentials,
   issueSession,
   changeUserPassword,
+  endAllSessions,
 };

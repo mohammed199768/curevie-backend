@@ -1,6 +1,6 @@
 const pool = require('../../config/db');
 const PatientRepository = require('../../repositories/PatientRepository');
-const AuthRepository = require('../../repositories/AuthRepository');
+const authService = require('../admin/auth.service');
 const notificationService = require('../notifications/notification.service');
 const { AppError } = require('../../middlewares/errorHandler');
 const { audit } = require('../../utils/logger');
@@ -8,7 +8,6 @@ const { paginate, paginationMeta } = require('../../utils/pagination');
 const { uploadPublicMedia, deletePublicMedia, toPublicMediaUrl } = require('../../utils/storage');
 
 const patientRepo = new PatientRepository(pool);
-const authRepo = new AuthRepository(pool);
 
 function present(patient) {
   return patient ? { ...patient, avatar_url: toPublicMediaUrl(patient.avatar_url) } : patient;
@@ -139,7 +138,7 @@ async function updateVip(req, res) {
 async function deletePatient(req, res) {
   const row = await patientRepo.softDelete(req.params.id);
   if (!row) throw new AppError('Patient not found', 404, 'PATIENT_NOT_FOUND');
-  await authRepo.revokeAllUserTokens(row.id, 'PATIENT');
+  await authService.endAllSessions(row.id, 'PATIENT');
   auditPatient(req, 'PATIENT_DELETED');
   return res.json({ message: 'Patient deleted successfully', patient: row });
 }

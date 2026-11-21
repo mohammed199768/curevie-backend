@@ -157,7 +157,7 @@ async function refresh(req, res) {
   // should be told the account is inactive rather than that a token was reused.
   const user = await authRepo.findUserById(decoded.id, role);
   if (!authService.isAccountUsable(user, role)) {
-    await authRepo.revokeAllUserTokens(decoded.id, role);
+    await authService.endAllSessions(decoded.id, role);
     clearRefreshCookie(res, role);
     return res.status(401).json({ message: 'Account is no longer active', code: 'ACCOUNT_INACTIVE' });
   }
@@ -203,8 +203,7 @@ async function logout(req, res) {
 }
 
 async function logoutAll(req, res) {
-  await authRepo.revokeAllUserTokens(req.user.id, req.user.role);
-  await blacklistCurrentAccessToken(req.user);
+  await authService.endAllSessions(req.user.id, req.user.role);
   clearRefreshCookie(res, req.user.role);
   audit('LOGOUT_ALL', { userId: req.user.id, role: req.user.role, ip: req.ip });
   return res.json({ message: 'All sessions have been revoked successfully' });
