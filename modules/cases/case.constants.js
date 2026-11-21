@@ -6,7 +6,7 @@ const ITEM_TYPES = ['SERVICE', 'PACKAGE'];
 const ITEM_CATALOG = {
   SERVICE: {
     column: 'service_id',
-    sql: `SELECT id, name AS item_name, price, is_active, is_vip_exclusive, service_kind AS kind
+    sql: `SELECT id, name AS item_name, price, is_active, is_vip_exclusive, service_kind AS kind, system_key
           FROM services WHERE id = ANY($1::uuid[])`,
   },
   PACKAGE: {
@@ -56,6 +56,15 @@ const OPEN_SERVICE_STATUSES = [SERVICE_STATUS.ASSIGNED, SERVICE_STATUS.ACCEPTED,
 
 const MAX_ITEMS_PER_CASE = 10;
 
+// One partner account per kind (setting routing.partners): lines of that kind go straight to it.
+const PARTNER_SETTING_KEYS = { LAB: 'lab_provider_id', RADIOLOGY: 'radiology_provider_id' };
+// Internal catalog items the server adds by itself (services.system_key); never orderable directly.
+const SYSTEM_SERVICES = { LAB_HOME_VISIT: 'lab_home_visit', LAB_INSURANCE_TESTS: 'lab_insurance_tests' };
+
+// Who an order is for (CHILD = under 18). Mirrors the CHECK constraints in migration 003.
+const RECIPIENT_GENDERS = ['MALE', 'FEMALE'];
+const RECIPIENT_AGE_GROUPS = ['CHILD', 'ADULT'];
+
 module.exports = {
   ITEM_TYPES,
   ITEM_CATALOG,
@@ -66,4 +75,8 @@ module.exports = {
   FINAL_CASE_STATUSES,
   OPEN_SERVICE_STATUSES,
   MAX_ITEMS_PER_CASE,
+  RECIPIENT_GENDERS,
+  RECIPIENT_AGE_GROUPS,
+  PARTNER_SETTING_KEYS,
+  SYSTEM_SERVICES,
 };

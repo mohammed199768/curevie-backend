@@ -152,7 +152,7 @@ router.get(
       `, params),
       pool.query(`
         SELECT
-          c.id AS case_id, cs.id AS case_service_id, ci.id AS invoice_id,
+          c.id AS case_id, c.reference_number AS case_reference_number, cs.id AS case_service_id, ci.id AS invoice_id,
           cs.provider_id, COALESCE(sp.full_name, 'Unassigned') AS provider_name,
           COALESCE(p.full_name, c.guest_name, '-') AS patient_name,
           cs.item_name AS service_name, cs.item_type, ${SERVICE_KIND_SQL} AS service_kind,

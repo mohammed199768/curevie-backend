@@ -3,7 +3,8 @@ const { SERVICE_KIND_SQL, OPEN_SERVICE_STATUSES } = require('../modules/cases/ca
 
 const CASE_DETAIL_SELECT = `
   SELECT
-    c.id, c.patient_id, c.guest_name, c.guest_phone, c.guest_address,
+    c.id, c.reference_number, c.recipient_gender, c.recipient_age_group, c.is_insurance,
+    c.patient_id, c.guest_name, c.guest_phone, c.guest_address,
     c.area_id, c.address, c.scheduled_for, c.lead_provider_id, c.status, c.notes,
     c.cancelled_at, c.cancelled_by, c.cancelled_by_role, c.cancel_reason,
     c.closed_at, c.closed_by, c.admin_close_notes, c.created_at, c.updated_at,
@@ -18,6 +19,10 @@ const CASE_DETAIL_SELECT = `
     p.height AS patient_height,
     p.weight AS patient_weight,
     p.is_vip AS patient_is_vip,
+    p.phone_verified_at AS patient_phone_verified_at,
+    (p.id_document_key IS NOT NULL) AS patient_has_id_document,
+    c.guest_phone_verified_at,
+    (c.guest_id_document_key IS NOT NULL) AS guest_has_id_document,
     a.name_ar AS area_name_ar,
     a.name_en AS area_name_en,
     lp.full_name AS lead_provider_name
@@ -32,6 +37,7 @@ const CASE_SERVICE_SELECT = `
     cs.id, cs.case_id, cs.item_type, cs.service_id, cs.package_id, cs.item_name,
     cs.item_name AS service_name,
     ${SERVICE_KIND_SQL} AS service_kind,
+    s.system_key AS service_system_key,
     cs.provider_id, cs.original_price, cs.bundle_price, cs.status, cs.notes,
     cs.assigned_at, cs.accepted_at, cs.started_at, cs.completed_at, cs.cancelled_at,
     cs.created_at, cs.updated_at,
@@ -58,7 +64,8 @@ const CASE_SERVICE_SELECT = `
 
 // Columns shared by every case list (admin, patient, provider).
 const CASE_LIST_COLUMNS = `
-  c.id, c.status, c.patient_id, c.area_id, c.scheduled_for, c.created_at, c.updated_at,
+  c.id, c.reference_number, c.recipient_gender, c.recipient_age_group, c.is_insurance,
+  c.status, c.patient_id, c.area_id, c.scheduled_for, c.created_at, c.updated_at,
   c.lead_provider_id, c.cancel_reason,
   (c.patient_id IS NULL) AS is_guest,
   COALESCE(p.full_name, c.guest_name) AS patient_name,
@@ -96,9 +103,9 @@ class CaseRepository extends BaseRepository {
     return this._queryOne(
       `INSERT INTO cases
         (patient_id, guest_name, guest_phone, guest_address, area_id, address,
-         scheduled_for, notes, tracking_token_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, status, created_at`,
+         scheduled_for, notes, tracking_token_hash, recipient_gender, recipient_age_group, is_insurance)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id, reference_number, status, created_at`,
       [
         data.patient_id || null,
         data.guest_name || null,
@@ -109,6 +116,9 @@ class CaseRepository extends BaseRepository {
         data.scheduled_for || null,
         data.notes || null,
         data.tracking_token_hash || null,
+        data.recipient_gender || null,
+        data.recipient_age_group || null,
+        Boolean(data.is_insurance),
       ],
       client
     );
@@ -213,8 +223,11 @@ class CaseRepository extends BaseRepository {
       }
       if (filters.search) {
         const searchParam = add(`%${filters.search}%`);
+        // "#123456" and "123456" both find an order by its number.
+        const referenceParam = add(`%${filters.search.replace(/^#/, '')}%`);
         where.push(`(COALESCE(p.full_name, c.guest_name) ILIKE ${searchParam}
           OR COALESCE(p.phone, c.guest_phone) ILIKE ${searchParam}
+          OR c.reference_number ILIKE ${referenceParam}
           OR c.id::text ILIKE ${searchParam})`);
       }
     }
@@ -281,6 +294,16 @@ class CaseRepository extends BaseRepository {
         data.bundle_price,
         data.notes || null,
       ],
+      client
+    );
+  }
+
+  /** Sets a line's price (used for lines priced per order, e.g. insurance lab tests). */
+  async updateLinePrice(lineId, price, client) {
+    return this._queryOne(
+      `UPDATE case_services SET original_price = $2, bundle_price = $2, updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [lineId, price],
       client
     );
   }
@@ -487,9 +510,10 @@ class CaseRepository extends BaseRepository {
     const result = await this._query(
       `SELECT cpf.id, cpf.case_service_id, cpf.file_type, cpf.is_sick_leave, cpf.uploaded_by,
               cpf.original_name, cpf.mime_type, cpf.size_bytes, cpf.created_at,
-              cs.item_name AS service_name, sp.full_name AS provider_name
+              cs.item_name AS service_name, ${SERVICE_KIND_SQL} AS service_kind, sp.full_name AS provider_name
        FROM case_provider_files cpf
        JOIN case_services cs ON cs.id = cpf.case_service_id
+       LEFT JOIN services s ON s.id = cs.service_id
        LEFT JOIN service_providers sp ON sp.id = cpf.uploaded_by
        WHERE cs.case_id = $1
        ORDER BY cpf.created_at DESC`,
@@ -501,9 +525,10 @@ class CaseRepository extends BaseRepository {
 
   async findProviderFile(caseId, fileId, client = null) {
     return this._queryOne(
-      `SELECT cpf.*, cs.case_id, cs.provider_id AS service_provider_id
+      `SELECT cpf.*, cs.case_id, cs.provider_id AS service_provider_id, ${SERVICE_KIND_SQL} AS service_kind
        FROM case_provider_files cpf
        JOIN case_services cs ON cs.id = cpf.case_service_id
+       LEFT JOIN services s ON s.id = cs.service_id
        WHERE cpf.id = $1 AND cs.case_id = $2`,
       [fileId, caseId],
       client
@@ -538,10 +563,11 @@ class CaseRepository extends BaseRepository {
 
   async listProviderRatings(providerId, { limit, offset }, client = null) {
     const result = await this._query(
-      `SELECT r.id, r.case_id, r.case_service_id, r.rating, r.comment, r.created_at,
-              cs.item_name AS service_name, p.full_name AS patient_name
+      `SELECT r.id, r.case_id, c.reference_number AS case_reference_number, r.case_service_id, r.rating, r.comment,
+              r.created_at, cs.item_name AS service_name, p.full_name AS patient_name
        FROM case_service_ratings r
        JOIN case_services cs ON cs.id = r.case_service_id
+       JOIN cases c ON c.id = r.case_id
        LEFT JOIN patients p ON p.id = r.patient_id
        WHERE r.provider_id = $1
        ORDER BY r.created_at DESC
@@ -558,11 +584,19 @@ class CaseRepository extends BaseRepository {
    * Ranks providers for a line item: matching type, covering the case area, preferred type
    * (allowedTypes order, e.g. lab tech before nurse before doctor), online, least busy, best rated.
    */
-  async findCandidateProviders({ areaId, allowedTypes, includeAll }, client = null) {
+  /**
+   * Providers for a line item, best first. Gender and age group only rank: the admin can pick anyone.
+   * gender_match / age_match are true when the order does not say (older orders).
+   */
+  async findCandidateProviders({ areaId, allowedTypes, includeAll, recipientGender, recipientAgeGroup }, client = null) {
     const result = await this._query(
       `SELECT
          sp.id, sp.full_name, sp.phone, sp.type, sp.avatar_url, sp.is_available,
+         sp.gender, sp.serves_children, sp.serves_adults,
          (sp.type::text = ANY($2::text[])) AS type_match,
+         ($5::text IS NULL OR sp.gender IS NOT DISTINCT FROM $5::text) AS gender_match,
+         ($6::text IS NULL OR ($6::text = 'CHILD' AND sp.serves_children)
+           OR ($6::text = 'ADULT' AND sp.serves_adults)) AS age_match,
          array_position($2::text[], sp.type::text) AS type_rank,
          ($1::uuid IS NOT NULL AND EXISTS (
            SELECT 1 FROM provider_areas pa WHERE pa.provider_id = sp.id AND pa.area_id = $1
@@ -579,10 +613,10 @@ class CaseRepository extends BaseRepository {
        WHERE sp.deleted_at IS NULL
          AND sp.is_active = TRUE
          AND ($4::boolean OR sp.type::text = ANY($2::text[]))
-       ORDER BY type_match DESC, covers_area DESC, type_rank ASC NULLS LAST, sp.is_available DESC, open_jobs ASC,
-                average_rating DESC, sp.full_name ASC
+       ORDER BY type_match DESC, gender_match DESC, age_match DESC, covers_area DESC, type_rank ASC NULLS LAST,
+                sp.is_available DESC, open_jobs ASC, average_rating DESC, sp.full_name ASC
        LIMIT 50`,
-      [areaId || null, allowedTypes, OPEN_SERVICE_STATUSES, Boolean(includeAll)],
+      [areaId || null, allowedTypes, OPEN_SERVICE_STATUSES, Boolean(includeAll), recipientGender || null, recipientAgeGroup || null],
       client
     );
     return result.rows;

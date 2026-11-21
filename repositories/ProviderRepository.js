@@ -3,6 +3,7 @@ const { OPEN_SERVICE_STATUSES } = require('../modules/cases/case.constants');
 
 const PROVIDER_COLUMNS = `
   sp.id, sp.full_name, sp.email, sp.phone, sp.type, sp.is_active, sp.is_available, sp.avatar_url,
+  sp.gender, sp.serves_children, sp.serves_adults,
   sp.created_at, sp.updated_at,
   COALESCE((
     SELECT json_agg(json_build_object('id', a.id, 'slug', a.slug, 'name_ar', a.name_ar, 'name_en', a.name_en)
@@ -32,12 +33,14 @@ class ProviderRepository extends BaseRepository {
     return Boolean(result.rows[0]);
   }
 
-  async createProvider({ full_name, email, hashedPassword, phone, type }, db = null) {
+  async createProvider({
+    full_name, email, hashedPassword, phone, type, gender, serves_children: servesChildren, serves_adults: servesAdults,
+  }, db = null) {
     return this._queryOne(
-      `INSERT INTO service_providers (full_name, email, password, phone, type)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO service_providers (full_name, email, password, phone, type, gender, serves_children, serves_adults)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [full_name, email, hashedPassword, phone || null, type],
+      [full_name, email, hashedPassword, phone || null, type, gender || null, servesChildren !== false, servesAdults !== false],
       db
     );
   }
@@ -88,7 +91,12 @@ class ProviderRepository extends BaseRepository {
   }
 
   async updateProvider(id, data, db = null) {
-    return this.update(id, data, ['full_name', 'phone', 'type', 'is_active', 'is_available'], db);
+    return this.update(
+      id,
+      data,
+      ['full_name', 'phone', 'type', 'is_active', 'is_available', 'gender', 'serves_children', 'serves_adults'],
+      db
+    );
   }
 
   async replaceAreas(providerId, areaIds, db) {

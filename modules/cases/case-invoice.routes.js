@@ -102,11 +102,11 @@ router.get(
     const params = [paymentStatus || null, search ? `%${search}%` : null];
     const where = `WHERE ($1::text IS NULL OR i.payment_status::text = $1)
       AND ($2::text IS NULL OR COALESCE(p.full_name, c.guest_name) ILIKE $2
-           OR COALESCE(p.phone, c.guest_phone) ILIKE $2 OR c.id::text ILIKE $2)`;
+           OR COALESCE(p.phone, c.guest_phone) ILIKE $2 OR c.reference_number ILIKE REPLACE($2, '#', '') OR c.id::text ILIKE $2)`;
 
     const [rows, count] = await Promise.all([
       pool.query(
-        `SELECT i.*, c.status AS case_status, c.created_at AS case_created_at,
+        `SELECT i.*, c.reference_number AS case_reference_number, c.status AS case_status, c.created_at AS case_created_at,
                 COALESCE(p.full_name, c.guest_name) AS patient_name,
                 COALESCE(p.phone, c.guest_phone) AS patient_phone
          FROM case_invoices i

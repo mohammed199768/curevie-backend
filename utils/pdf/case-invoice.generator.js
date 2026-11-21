@@ -573,7 +573,9 @@ async function generateCaseInvoicePdf({ caseId, invoice, payments, adjustments }
   const logoDataUri = await fileToDataUri(LOGO_PATH).catch(() => null);
 
   const shortInvoiceId = String(invoice.id || '').slice(0, 8).toUpperCase();
-  const shortCaseId    = String(caseId     || '').slice(0, 8).toUpperCase();
+  const shortCaseId    = caseRecord.reference_number
+    ? `#${caseRecord.reference_number}`
+    : String(caseId || '').slice(0, 8).toUpperCase();
   const generatedAt    = new Date().toLocaleString('en-GB');
 
   const html = buildInvoiceHtml({

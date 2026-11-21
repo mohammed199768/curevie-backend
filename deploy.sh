@@ -2,6 +2,7 @@
 # Build, back up, migrate and (re)start the stack. Works for the first deploy and for updates.
 #   ./deploy.sh                 normal deploy
 #   SEED_CATALOG=1 ./deploy.sh  also load the launch catalog (first deploy only; see config/seeds/catalog_seed.js)
+#   SEED_LAB=1 ./deploy.sh      also load the partner lab catalog (safe to repeat; see config/seeds/lab_catalog_seed.js)
 set -euo pipefail
 
 if [ ! -f .env ]; then
@@ -40,6 +41,11 @@ docker compose run --rm --no-deps backend node config/initDb.js
 if [ "${SEED_CATALOG:-0}" = "1" ]; then
   echo "==> Loading the launch catalog (existing items are left untouched)..."
   docker compose run --rm --no-deps backend node config/seeds/catalog_seed.js
+fi
+
+if [ "${SEED_LAB:-0}" = "1" ]; then
+  echo "==> Loading the partner lab catalog (existing tests and admin edits are left untouched)..."
+  docker compose run --rm --no-deps backend node config/seeds/lab_catalog_seed.js
 fi
 
 echo "==> Starting services..."

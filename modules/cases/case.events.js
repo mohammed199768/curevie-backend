@@ -1,13 +1,16 @@
 // Side effects that follow a committed case change: stored notifications plus live socket events.
 // Nothing here may throw into the request; every entry point goes through notifySafely.
+const pool = require('../../config/db');
 const notificationService = require('../notifications/notification.service');
 const { emitToUser, emitToRole } = require('../../utils/socket');
 const { t } = require('../../utils/i18n/ar');
 
 const { NOTIF_TYPES, notifySafely } = notificationService;
 
-function caseRef(caseId) {
-  return `#${String(caseId || '').slice(0, 8).toUpperCase()}`;
+/** "#123456", the order number patients and admins use (also in CliQ transfer notes). */
+async function caseRef(caseId) {
+  const { rows } = await pool.query('SELECT reference_number FROM cases WHERE id = $1', [caseId]);
+  return rows[0]?.reference_number ? `#${rows[0].reference_number}` : `#${String(caseId || '').slice(0, 8).toUpperCase()}`;
 }
 
 /**
@@ -28,9 +31,9 @@ function emitCaseUpdated({ caseId, status, patientId, providerIds = [], event, c
   [...new Set(providerIds.filter(Boolean))].forEach((providerId) => emitToUser(providerId, 'case:updated', message));
 }
 
-function caseCreated({ caseId, patientId, sourceLabel, itemNames }) {
+function caseCreated({ caseId, referenceNumber, patientId, sourceLabel, itemNames }) {
   return notifySafely('case_created', async () => {
-    emitToRole('ADMIN', 'case:created', { case_id: caseId, at: new Date().toISOString() });
+    emitToRole('ADMIN', 'case:created', { case_id: caseId, reference_number: referenceNumber || null, at: new Date().toISOString() });
     await notificationService.notifyAdmins({
       type: NOTIF_TYPES.CASE_CREATED,
       title: t('notifications.case.created_admin_title'),
@@ -136,7 +139,7 @@ function serviceProgressed({ action, caseId, caseStatus, patientId, providerName
           ? t('notifications.case.case_completed_admin_title')
           : t('notifications.case.completed_admin_title'),
         body: caseStatus === 'COMPLETED'
-          ? t('notifications.case.case_completed_admin_body', { caseRef: caseRef(caseId) })
+          ? t('notifications.case.case_completed_admin_body', { caseRef: await caseRef(caseId) })
           : t('notifications.case.completed_admin_body', { provider, item: itemName }),
         data,
       });
@@ -182,7 +185,7 @@ function caseCancelled({ caseId, cancelledByRole, patientId, providerIds, reason
       await notificationService.notifyAdmins({
         type: NOTIF_TYPES.CASE_CANCELLED,
         title: t('notifications.case.cancelled_admin_title'),
-        body: t('notifications.case.cancelled_admin_body', { caseRef: caseRef(caseId), reason: reason || '' }),
+        body: t('notifications.case.cancelled_admin_body', { caseRef: await caseRef(caseId), reason: reason || '' }),
         data,
       });
     }
@@ -202,6 +205,32 @@ function appointmentScheduled({ caseId, patientId, providerId, itemName, schedul
       patientId ? { ...base, userId: patientId, userRole: 'PATIENT' } : null,
       providerId ? { ...base, userId: providerId, userRole: 'PROVIDER' } : null,
     ].filter(Boolean));
+  });
+}
+
+/** A provider added services to an order: the patient is told, admins are told when something waits for them. */
+function servicesAddedByProvider({ caseId, patientId, providerName, itemNames, waitingForAdmin }) {
+  return notifySafely('services_added', async () => {
+    const items = itemNames.join('، ');
+    const data = { case_id: caseId };
+    if (patientId) {
+      await notificationService.createNotification({
+        userId: patientId,
+        userRole: 'PATIENT',
+        type: NOTIF_TYPES.CASE_UPDATED,
+        title: t('notifications.case.services_added_patient_title'),
+        body: t('notifications.case.services_added_patient_body', { provider: providerName, items }),
+        data,
+      });
+    }
+    await notificationService.notifyAdmins({
+      type: NOTIF_TYPES.CASE_UPDATED,
+      title: t('notifications.case.services_added_admin_title'),
+      body: t(waitingForAdmin
+        ? 'notifications.case.services_added_admin_assign_body'
+        : 'notifications.case.services_added_admin_body', { caseRef: await caseRef(caseId), provider: providerName, items }),
+      data,
+    });
   });
 }
 
@@ -263,6 +292,7 @@ module.exports = {
   caseCancelled,
   appointmentScheduled,
   caseClosed,
+  servicesAddedByProvider,
   serviceRated,
   reportPublished,
 };

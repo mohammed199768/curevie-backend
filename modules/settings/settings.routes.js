@@ -16,6 +16,7 @@ const { authenticate, adminOnly } = require('../../middlewares/auth');
 const { apiLimiter, readLimiter } = require('../../middlewares/rateLimiter');
 const { AppError } = require('../../middlewares/errorHandler');
 const { audit } = require('../../utils/logger');
+const messaging = require('../../utils/messaging');
 
 const router = express.Router();
 const settingsRepo = new SettingsRepository(pool);
@@ -36,7 +37,45 @@ const SETTING_SCHEMAS = {
     value: Joi.number().min(0).precision(3).required()
       .when('type', { is: 'PERCENT', then: Joi.number().max(100) }),
   }),
+  // One partner account per kind: new LAB / RADIOLOGY lines go straight to it (null = admin assigns).
+  'routing.partners': Joi.object({
+    lab_provider_id: Joi.string().uuid().allow(null).required(),
+    radiology_provider_id: Joi.string().uuid().allow(null).required(),
+  }),
+  // Charged once per order that has lab tests; paid in full to the lab.
+  'lab.home_visit_fee': Joi.object({
+    amount: Joi.number().min(0).max(1000).precision(3).required(),
+  }),
+  // What ordering requires: an ID document, and a phone confirmed by a code.
+  verification: Joi.object({
+    require_id: Joi.boolean().required(),
+    require_phone: Joi.boolean().required(),
+  }).custom((value, helpers) => (
+    value.require_phone && !messaging.canDeliver()
+      ? helpers.message('Configure WhatsApp or SMS before requiring phone verification, or nobody can order')
+      : value
+  )),
 };
+
+// A partner must be an active provider of a type that can do that kind of work.
+const PARTNER_TYPES = { lab_provider_id: ['LAB_TECH', 'NURSE', 'DOCTOR'], radiology_provider_id: ['RADIOLOGY_TECH', 'DOCTOR'] };
+
+async function assertPartnersValid(value) {
+  for (const [field, types] of Object.entries(PARTNER_TYPES)) {
+    if (!value[field]) continue;
+    const { rows } = await pool.query(
+      'SELECT type, is_active, deleted_at FROM service_providers WHERE id = $1',
+      [value[field]]
+    );
+    const provider = rows[0];
+    if (!provider || provider.deleted_at || !provider.is_active) {
+      throw new AppError(`${field}: provider not found or disabled`, 400, 'INVALID_PARTNER');
+    }
+    if (!types.includes(provider.type)) {
+      throw new AppError(`${field}: a ${provider.type} cannot be this partner`, 400, 'INVALID_PARTNER');
+    }
+  }
+}
 
 const keyParams = Joi.object({ key: Joi.string().valid(...Object.keys(SETTING_SCHEMAS)).required() });
 
@@ -44,13 +83,21 @@ router.get('/public', readLimiter, asyncHandler(async (req, res) => {
   const cached = await cache.get(PUBLIC_CACHE_KEY);
   if (cached) return res.json(cached);
 
-  const cliq = await settingsRepo.get('payments.cliq');
+  const [cliq, labFee, rules] = await Promise.all([
+    settingsRepo.get('payments.cliq'),
+    settingsRepo.get('lab.home_visit_fee'),
+    settingsRepo.get('verification'),
+  ]);
   // CliQ is only offered once it is switched on and has an alias to transfer to.
   const response = {
     data: {
       cliq: cliq?.enabled && cliq.alias
         ? { alias: cliq.alias, beneficiary_name: cliq.beneficiary_name, bank_name: cliq.bank_name, note: cliq.note }
         : null,
+      // Added once to any order with lab tests; shown in the cart before ordering.
+      lab_home_visit_fee: Number(labFee?.amount ?? 5),
+      // Which verification steps the order flows must show.
+      verification: { require_id: rules?.require_id !== false, require_phone: Boolean(rules?.require_phone) },
     },
   };
   await cache.set(PUBLIC_CACHE_KEY, response, 60);
@@ -71,6 +118,7 @@ router.put(
   asyncHandler(async (req, res) => {
     const { error, value } = SETTING_SCHEMAS[req.params.key].validate(req.body, { stripUnknown: true });
     if (error) throw new AppError(error.message, 400, 'VALIDATION_ERROR');
+    if (req.params.key === 'routing.partners') await assertPartnersValid(value);
 
     const saved = await settingsRepo.set(req.params.key, value, req.user.id);
     await cache.del(PUBLIC_CACHE_KEY);

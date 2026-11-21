@@ -2,10 +2,12 @@ const { alertError } = require('../utils/telegram');
 const { logger } = require('../utils/logger');
 
 class AppError extends Error {
-  constructor(message, statusCode = 500, code = null) {
+  /** @param {object} [details] extra machine-readable data for the client, e.g. { missing: [...] } */
+  constructor(message, statusCode = 500, code = null, details = null) {
     super(message);
     this.statusCode = statusCode;
     this.code = code;
+    this.details = details;
     this.isOperational = true;
     Error.captureStackTrace(this, this.constructor);
   }
@@ -23,7 +25,7 @@ const POSTGRES_ERRORS = {
 
 const errorHandler = (err, req, res, next) => {
   if (err.isOperational) {
-    return res.status(err.statusCode).json({ message: err.message, code: err.code });
+    return res.status(err.statusCode).json({ message: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
   }
 
   const pgError = POSTGRES_ERRORS[err.code];

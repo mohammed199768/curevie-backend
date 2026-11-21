@@ -5,7 +5,8 @@ const { toPublicMediaUrl } = require('../utils/storage');
 const ROOM_SELECT = `
   SELECT
     cr.id, cr.case_service_id, cr.patient_id, cr.provider_id, cr.created_at,
-    cs.case_id, cs.item_name AS service_name, cs.status AS service_status,
+    cs.case_id, c.reference_number AS case_reference_number,
+    cs.item_name AS service_name, cs.status AS service_status,
     cs.provider_id AS assigned_provider_id,
     c.status AS case_status,
     p.full_name AS patient_name,

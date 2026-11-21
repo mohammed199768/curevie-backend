@@ -70,6 +70,10 @@ before(async () => {
   await runMigrations({ log: () => {} });
 
   pool = require('../config/db');
+  // Older tests check their own totals; the lab home-visit fee has dedicated tests that switch it on.
+  await pool.query("UPDATE app_settings SET value = '{\"amount\": 0}'::jsonb WHERE key = 'lab.home_visit_fee'");
+  // Likewise identity checks: their own test switches them on.
+  await pool.query("UPDATE app_settings SET value = '{\"require_id\": false, \"require_phone\": false}'::jsonb WHERE key = 'verification'");
   const bcrypt = require('bcryptjs');
   const hash = await bcrypt.hash('Passw0rd!', 4);
 
@@ -217,6 +221,87 @@ test('candidates are ranked by type and area', { skip }, async () => {
   const names = res.body.data.providers.map((p) => p.full_name);
   assert.deepEqual(names, ['Dr Area', 'Dr Far'], 'lab tech is excluded for a medical visit, area match first');
   assert.equal(res.body.data.providers[0].covers_area, true);
+});
+
+test('orders get a unique 6-digit number and candidates follow the care recipient', { skip }, async () => {
+  await pool.query("UPDATE service_providers SET gender = 'MALE' WHERE id = $1", [ids['doc.area@test.io']]);
+  await pool.query("UPDATE service_providers SET gender = 'FEMALE', serves_children = FALSE WHERE id = $1", [ids['doc.far@test.io']]);
+  try {
+    const order = (recipient) => api('POST', '/cases', {
+      token: tokens.patient,
+      body: { area_id: ids.area, items: [{ type: 'SERVICE', id: ids['Home doctor visit'] }], ...recipient },
+    });
+    const candidates = async (view) => (await api(
+      'GET',
+      `/cases/${view.case.id}/services/${view.services[0].id}/candidates`,
+      { token: tokens.admin }
+    )).body.data;
+
+    const woman = await order({ recipient_gender: 'FEMALE', recipient_age_group: 'ADULT' });
+    assert.equal(woman.status, 201, JSON.stringify(woman.body));
+    assert.match(woman.body.data.case.reference_number, /^[1-9]\d{5}$/);
+    assert.equal(woman.body.data.case.recipient_gender, 'FEMALE');
+    assert.equal(woman.body.data.case.recipient_age_group, 'ADULT');
+
+    const forWoman = await candidates(woman.body.data);
+    assert.deepEqual(forWoman.providers.map((p) => p.full_name), ['Dr Far', 'Dr Area'],
+      'the female doctor ranks first although she does not cover the area');
+    assert.equal(forWoman.providers[0].gender_match, true);
+    assert.equal(forWoman.providers[1].gender_match, false);
+    assert.equal(forWoman.recipient_gender, 'FEMALE');
+
+    const boy = await order({ recipient_gender: 'MALE', recipient_age_group: 'CHILD' });
+    const forBoy = await candidates(boy.body.data);
+    assert.deepEqual(forBoy.providers.map((p) => p.full_name), ['Dr Area', 'Dr Far']);
+    assert.equal(forBoy.providers[1].age_match, false, 'Dr Far does not see children');
+
+    const unknown = await order({});
+    assert.equal(unknown.status, 201, 'recipient is optional for older clients');
+    assert.equal(unknown.body.data.case.recipient_gender, null);
+
+    const bad = await order({ recipient_gender: 'OTHER' });
+    assert.equal(bad.status, 400);
+
+    const { rows } = await pool.query('SELECT COUNT(*)::int AS total, COUNT(DISTINCT reference_number)::int AS unique FROM cases');
+    assert.equal(rows[0].total, rows[0].unique, 'every order number is unique');
+
+    const ref = woman.body.data.case.reference_number;
+    const found = await api('GET', `/cases?search=${encodeURIComponent(`#${ref}`)}`, { token: tokens.admin });
+    assert.deepEqual(found.body.data.cases.map((c) => c.id), [woman.body.data.case.id], 'admin finds an order by its number');
+    assert.equal(found.body.data.cases[0].reference_number, ref);
+
+    const guest = await api('POST', '/cases/public', {
+      body: {
+        guest_name: 'Guest Two', guest_phone: '0781112222', address: 'Abdoun, building 9', area_id: ids.area,
+        items: [{ type: 'SERVICE', id: ids.labTest }], recipient_gender: 'FEMALE', recipient_age_group: 'CHILD',
+      },
+    });
+    assert.equal(guest.status, 201, JSON.stringify(guest.body));
+    const track = await api('GET', `/cases/track/${guest.body.data.tracking_token}`);
+    assert.match(track.body.data.reference, /^#[1-9]\d{5}$/);
+    assert.equal(track.body.data.recipient_age_group, 'CHILD');
+
+    for (const view of [woman.body.data, boy.body.data, unknown.body.data]) {
+      await api('POST', `/cases/${view.case.id}/cancel`, { token: tokens.patient, body: {} });
+    }
+  } finally {
+    await pool.query('UPDATE service_providers SET gender = NULL, serves_children = TRUE WHERE id = ANY($1::uuid[])', [
+      [ids['doc.area@test.io'], ids['doc.far@test.io']],
+    ]);
+  }
+});
+
+test('admins record a provider gender and the age groups they serve', { skip }, async () => {
+  const update = await api('PUT', `/providers/${ids['lab@test.io']}`, {
+    token: tokens.admin,
+    body: { gender: 'FEMALE', serves_children: false },
+  });
+  assert.equal(update.status, 200, JSON.stringify(update.body));
+  assert.equal(update.body.gender, 'FEMALE');
+  assert.equal(update.body.serves_children, false);
+  assert.equal(update.body.serves_adults, true);
+  assert.equal((await api('PUT', `/providers/${ids['lab@test.io']}`, { token: tokens.admin, body: { gender: 'X' } })).status, 400);
+  await api('PUT', `/providers/${ids['lab@test.io']}`, { token: tokens.admin, body: { gender: null, serves_children: true } });
 });
 
 test('packages bundle services and lab items go to lab staff first', { skip }, async () => {
@@ -790,6 +875,407 @@ test('socket.io: auth, room access, live messages and case updates', { skip }, a
   assert.match(denied.message, /access denied/i);
 
   [patient, doctor, outsider].forEach((client) => client.close());
+});
+
+test('lab orders go straight to the partner lab with one home-visit fee', { skip }, async () => {
+  const setting = (key, body) => api('PUT', `/settings/${key}`, { token: tokens.admin, body });
+  const bad = await setting('routing.partners', { lab_provider_id: ids.patient, radiology_provider_id: null });
+  assert.equal(bad.body.code, 'INVALID_PARTNER', 'a patient id cannot be the lab partner');
+  assert.equal((await setting('routing.partners', { lab_provider_id: ids['lab@test.io'], radiology_provider_id: null })).status, 200);
+  assert.equal((await setting('lab.home_visit_fee', { amount: 5 })).status, 200);
+  try {
+    const order = await api('POST', '/cases', {
+      token: tokens.patient,
+      body: {
+        area_id: ids.area,
+        items: [{ type: 'SERVICE', id: ids.labTest }, { type: 'SERVICE', id: ids['Home doctor visit'] }],
+        recipient_gender: 'MALE',
+        recipient_age_group: 'ADULT',
+      },
+    });
+    assert.equal(order.status, 201, JSON.stringify(order.body));
+    const view = order.body.data;
+    const lab = view.services.find((line) => line.service_id === ids.labTest);
+    const visit = view.services.find((line) => line.service_id === ids['Home doctor visit']);
+    const fees = view.services.filter((line) => line.service_system_key === 'lab_home_visit');
+    assert.equal(fees.length, 1, 'one fee per order');
+    assert.equal(Number(fees[0].bundle_price), 5, 'the fee is never discounted');
+    assert.deepEqual([lab.status, lab.provider_id], ['ASSIGNED', ids['lab@test.io']], 'lab test goes to the partner');
+    assert.deepEqual([fees[0].status, fees[0].provider_id], ['ASSIGNED', ids['lab@test.io']], 'the fee belongs to the lab');
+    assert.deepEqual([visit.status, visit.provider_id], ['PENDING', null], 'other lines still wait for the admin');
+    assert.equal(view.case.status, 'ACCEPTED');
+
+    const labToken = (await login('lab@test.io', 'Passw0rd!', 'PROVIDER')).token;
+    assert.equal((await api('GET', `/cases/${view.case.id}`, { token: labToken })).status, 200, 'the lab sees its order');
+
+    const direct = await api('POST', '/cases', {
+      token: tokens.patient,
+      body: { area_id: ids.area, items: [{ type: 'SERVICE', id: fees[0].service_id }] },
+    });
+    assert.equal(direct.body.code, 'ITEM_NOT_FOUND', 'the fee cannot be ordered on its own');
+
+    const catalog = await api('GET', '/services?service_kind=LAB&limit=100');
+    assert.equal(catalog.body.data.some((service) => service.system_key), false, 'system items are never listed');
+    assert.equal((await api('GET', `/services/${fees[0].service_id}`)).status, 404);
+
+    const cancelled = await api('POST', `/cases/${view.case.id}/services/${lab.id}/cancel`, {
+      token: tokens.admin, body: { reason: 'test' },
+    });
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    const feeAfter = cancelled.body.data.services.find((line) => line.id === fees[0].id);
+    assert.equal(feeAfter.status, 'CANCELLED', 'no lab test left, no visit fee');
+    assert.equal(Number(cancelled.body.data.invoice.final_amount), Number(visit.bundle_price));
+    await api('POST', `/cases/${view.case.id}/cancel`, { token: tokens.admin, body: {} });
+  } finally {
+    await setting('routing.partners', { lab_provider_id: null, radiology_provider_id: null });
+    await setting('lab.home_visit_fee', { amount: 0 });
+  }
+});
+
+test('lab catalog: groups in admin order, popular first page, search, reorder', { skip }, async () => {
+  const group = await api('POST', '/services/categories', {
+    token: tokens.admin,
+    body: { name: 'lab-kidney-test', name_ar: 'الكلى', name_en: 'Kidneys', service_kind: 'LAB' },
+  });
+  assert.equal(group.status, 201, JSON.stringify(group.body));
+  const made = [];
+  for (const [name, popular] of [['Creatinine', true], ['Urea', true], ['Cystatin C', false]]) {
+    const res = await api('POST', '/services', {
+      token: tokens.admin,
+      body: { name, name_en: name, name_ar: `${name} ar`, price: 3, service_kind: 'LAB', category_id: group.body.id, is_popular: popular },
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    made.push(res.body.id);
+  }
+  const groups = await api('GET', '/services/categories?service_kind=LAB');
+  const listedGroup = groups.body.data.find((row) => row.id === group.body.id);
+  assert.equal(listedGroup.active_count, 3);
+  assert.equal(listedGroup.name_ar, 'الكلى');
+
+  const popular = await api('GET', `/services?category_id=${group.body.id}&is_popular=true&limit=10`);
+  assert.equal(popular.body.data.length, 2);
+  const searched = await api('GET', `/services?service_kind=LAB&search=${encodeURIComponent('Cystatin C ar')}`);
+  assert.deepEqual(searched.body.data.map((row) => row.id), [made[2]], 'Arabic names are searchable');
+
+  const reordered = await api('PUT', '/services/reorder', { token: tokens.admin, body: { ids: [made[2], made[0], made[1]] } });
+  assert.equal(reordered.status, 200, JSON.stringify(reordered.body));
+  const ordered = await api('GET', `/services?category_id=${group.body.id}&limit=10`);
+  assert.deepEqual(ordered.body.data.map((row) => row.id), [made[2], made[0], made[1]]);
+  assert.equal((await api('PUT', '/services/reorder', { token: tokens.patient, body: { ids: made } })).status, 403);
+
+  for (const id of made) await api('DELETE', `/services/${id}`, { token: tokens.admin });
+});
+
+test('insurance lab request: lab prices it, patient approves, money is tracked', { skip }, async () => {
+  const setting = (key, body) => api('PUT', `/settings/${key}`, { token: tokens.admin, body });
+  await setting('routing.partners', { lab_provider_id: ids['lab@test.io'], radiology_provider_id: null });
+  await setting('lab.home_visit_fee', { amount: 5 });
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  try {
+    const created = await api('POST', '/cases/insurance', {
+      token: tokens.patient,
+      form: fileForm(png, 'card.png', 'image/png', { area_id: ids.area, recipient_gender: 'FEMALE', recipient_age_group: 'ADULT' }),
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const caseId = created.body.data.case.id;
+    assert.equal(created.body.data.case.is_insurance, true);
+    assert.equal(created.body.data.insurance.status, 'SUBMITTED');
+    const testsLine = created.body.data.services.find((line) => line.service_system_key === 'lab_insurance_tests');
+    const feeLine = created.body.data.services.find((line) => line.service_system_key === 'lab_home_visit');
+    assert.equal(testsLine.provider_id, ids['lab@test.io']);
+    assert.equal(Number(feeLine.bundle_price), 5);
+
+    const labToken = (await login('lab@test.io', 'Passw0rd!', 'PROVIDER')).token;
+    const card = await api('GET', `/cases/${caseId}/insurance/card`, { token: labToken });
+    assert.equal(card.status, 200);
+    assert.equal(card.headers.get('content-type'), 'image/png');
+    assert.equal((await api('GET', `/cases/${caseId}/insurance/card`, { token: tokens.docFar })).status, 404, 'other providers cannot see it');
+
+    assert.equal((await api('POST', `/cases/${caseId}/insurance/approve`, { token: tokens.patient })).status, 409, 'nothing to approve yet');
+    assert.equal((await api('PUT', `/cases/${caseId}/services/${testsLine.id}/accept`, { token: labToken })).status, 200);
+    const early = await api('PUT', `/cases/${caseId}/services/${testsLine.id}/start`, { token: labToken });
+    assert.equal(early.body.code, 'INSURANCE_NOT_APPROVED');
+
+    const notMine = await api('PUT', `/cases/${caseId}/insurance/quote`, {
+      token: tokens.docArea, body: { tests_description: 'CBC', patient_amount: 1, lab_owes_amount: 1 },
+    });
+    assert.equal(notMine.status, 404);
+    const quote = await api('PUT', `/cases/${caseId}/insurance/quote`, {
+      token: labToken, body: { tests_description: 'CBC, TSH, Vitamin D', patient_amount: 12, lab_owes_amount: 20 },
+    });
+    assert.equal(quote.status, 200, JSON.stringify(quote.body));
+    assert.equal(Number(quote.body.data.insurance.lab_owes_amount), 20);
+
+    const patientView = (await api('GET', `/cases/${caseId}`, { token: tokens.patient })).body.data;
+    assert.equal(patientView.insurance.status, 'QUOTED');
+    assert.equal(patientView.insurance.amount_to_pay, 17, 'patient amount + visit fee');
+    assert.equal('lab_owes_amount' in patientView.insurance, false, 'patients never see what the lab owes Curevie');
+    assert.equal(Number(patientView.invoice.final_amount), 17);
+
+    const approved = await api('POST', `/cases/${caseId}/insurance/approve`, { token: tokens.patient });
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    assert.equal(approved.body.data.insurance.status, 'APPROVED');
+
+    for (const line of [testsLine, feeLine]) {
+      if (line.id !== testsLine.id) {
+        assert.equal((await api('PUT', `/cases/${caseId}/services/${line.id}/accept`, { token: labToken })).status, 200);
+      }
+      for (const step of ['start', 'complete']) {
+        const res = await api('PUT', `/cases/${caseId}/services/${line.id}/${step}`, { token: labToken });
+        assert.equal(res.status, 200, `${step}: ${JSON.stringify(res.body)}`);
+      }
+    }
+    const { rows } = await pool.query(
+      'SELECT COALESCE(SUM(amount), 0)::numeric AS total FROM provider_earnings WHERE case_id = $1 AND provider_id = $2',
+      [caseId, ids['lab@test.io']]
+    );
+    assert.equal(Number(rows[0].total), 17, 'the lab earns the patient amount + the visit fee, paid out by an admin');
+
+    const list = await api('GET', '/cases/insurance/requests', { token: tokens.admin });
+    assert.equal(list.status, 200, JSON.stringify(list.body));
+    const row = list.body.data.find((item) => item.case_id === caseId);
+    assert.equal(Number(row.lab_owes_amount), 20);
+    assert.equal(row.lab_provider_name, 'Lab Tech');
+    assert.ok(list.body.summary.receivable_pending >= 20);
+    const received = await api('PATCH', `/cases/${caseId}/insurance/receivable`, { token: tokens.admin, body: { status: 'RECEIVED' } });
+    assert.equal(received.body.data.receivable_status, 'RECEIVED');
+    assert.equal((await api('GET', '/cases/insurance/requests', { token: tokens.patient })).status, 403);
+  } finally {
+    await setting('routing.partners', { lab_provider_id: null, radiology_provider_id: null });
+    await setting('lab.home_visit_fee', { amount: 0 });
+  }
+});
+
+test('lab results reach the patient as soon as the lab uploads them', { skip }, async () => {
+  const order = await api('POST', '/cases', {
+    token: tokens.patient,
+    body: { area_id: ids.area, items: [{ type: 'SERVICE', id: ids.labTest }], recipient_gender: 'MALE', recipient_age_group: 'ADULT' },
+  });
+  const caseId = order.body.data.case.id;
+  const line = order.body.data.services[0];
+  await api('POST', `/cases/${caseId}/assign-team`, {
+    token: tokens.admin, body: { assignments: [{ case_service_id: line.id, provider_id: ids['lab@test.io'] }] },
+  });
+  const labToken = (await login('lab@test.io', 'Passw0rd!', 'PROVIDER')).token;
+  for (const step of ['accept', 'start']) await api('PUT', `/cases/${caseId}/services/${line.id}/${step}`, { token: labToken });
+  const upload = await api('POST', `/cases/${caseId}/services/${line.id}/files`, {
+    token: labToken, form: fileForm(MINIMAL_PDF, 'result.pdf', 'application/pdf'),
+  });
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+
+  const patientView = (await api('GET', `/cases/${caseId}`, { token: tokens.patient })).body.data;
+  assert.equal(patientView.case.status, 'IN_PROGRESS', 'the order is still open');
+  assert.equal(patientView.provider_files.length, 1, 'the lab result is visible before the case is closed');
+  const download = await api('GET', `/cases/${caseId}/files/${upload.body.data.id}`, { token: tokens.patient });
+  assert.equal(download.status, 200);
+});
+
+test('providers add services: their own kind to them, lab to the partner, the rest to the admin', { skip }, async () => {
+  const setting = (key, body) => api('PUT', `/settings/${key}`, { token: tokens.admin, body });
+  await setting('routing.partners', { lab_provider_id: ids['lab@test.io'], radiology_provider_id: null });
+  await setting('lab.home_visit_fee', { amount: 5 });
+  const nursing = await api('POST', '/services', {
+    token: tokens.admin, body: { name: 'Wound dressing', price: 10, service_kind: 'NURSING' },
+  });
+  try {
+    const order = await api('POST', '/cases', {
+      token: tokens.patient,
+      body: { area_id: ids.area, items: [{ type: 'SERVICE', id: ids['Home doctor visit'] }], recipient_gender: 'MALE', recipient_age_group: 'ADULT' },
+    });
+    const caseId = order.body.data.case.id;
+    const first = order.body.data.services[0];
+    await api('POST', `/cases/${caseId}/assign-team`, {
+      token: tokens.admin, body: { assignments: [{ case_service_id: first.id, provider_id: ids['doc.area@test.io'] }] },
+    });
+    await api('PUT', `/cases/${caseId}/services/${first.id}/accept`, { token: tokens.docArea });
+    const before = Number((await api('GET', `/cases/${caseId}`, { token: tokens.admin })).body.data.invoice.final_amount);
+
+    const items = [
+      { type: 'SERVICE', id: ids['Home doctor visit'], notes: 'follow-up' },
+      { type: 'SERVICE', id: ids.labTest },
+      { type: 'SERVICE', id: nursing.body.id },
+    ];
+    assert.equal((await api('POST', `/cases/${caseId}/services`, { token: tokens.docFar, body: { items } })).status, 404,
+      'only providers on the order can add to it');
+    assert.equal((await api('POST', `/cases/${caseId}/services`, { token: tokens.patient, body: { items } })).status, 403);
+
+    const added = await api('POST', `/cases/${caseId}/services`, { token: tokens.docArea, body: { items } });
+    assert.equal(added.status, 201, JSON.stringify(added.body));
+    const adminView = (await api('GET', `/cases/${caseId}`, { token: tokens.admin })).body.data;
+    const lines = adminView.services.filter((line) => line.id !== first.id);
+    const visit = lines.find((line) => line.service_id === ids['Home doctor visit']);
+    const lab = lines.find((line) => line.service_id === ids.labTest);
+    const care = lines.find((line) => line.service_id === nursing.body.id);
+    const fee = lines.find((line) => line.service_system_key === 'lab_home_visit');
+    assert.deepEqual([visit.status, visit.provider_id], ['ACCEPTED', ids['doc.area@test.io']], 'own kind: assigned to the doctor');
+    assert.deepEqual([lab.status, lab.provider_id], ['ASSIGNED', ids['lab@test.io']], 'lab test: to the partner lab');
+    assert.deepEqual([care.status, care.provider_id], ['PENDING', null], 'nursing: waits for the admin');
+    assert.equal(fee.provider_id, ids['lab@test.io']);
+    const expected = before + Number(visit.bundle_price) + Number(lab.bundle_price) + Number(care.bundle_price) + 5;
+    assert.equal(Number(adminView.invoice.final_amount), Number(expected.toFixed(3)), 'the invoice follows, no approval step');
+    assert.ok(adminView.lifecycle.some((event) => event.event_type === 'SERVICE_ADDED_BY_PROVIDER'));
+
+    await api('POST', `/cases/${caseId}/cancel`, { token: tokens.admin, body: {} });
+  } finally {
+    await api('DELETE', `/services/${nursing.body.id}`, { token: tokens.admin });
+    await setting('routing.partners', { lab_provider_id: null, radiology_provider_id: null });
+    await setting('lab.home_visit_fee', { amount: 0 });
+  }
+});
+
+test('provider expenses: receipt, admin review, paid with the next payout, never shown to the patient', { skip }, async () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const order = await api('POST', '/cases', {
+    token: tokens.patient,
+    body: { area_id: ids.area, items: [{ type: 'SERVICE', id: ids['Home doctor visit'] }], recipient_gender: 'MALE', recipient_age_group: 'ADULT' },
+  });
+  const caseId = order.body.data.case.id;
+  const line = order.body.data.services[0];
+  await api('POST', `/cases/${caseId}/assign-team`, {
+    token: tokens.admin, body: { assignments: [{ case_service_id: line.id, provider_id: ids['doc.area@test.io'] }] },
+  });
+  await api('PUT', `/cases/${caseId}/services/${line.id}/accept`, { token: tokens.docArea });
+  const invoiceBefore = (await api('GET', `/cases/${caseId}`, { token: tokens.patient })).body.data.invoice.final_amount;
+
+  const submit = (token) => api('POST', `/cases/${caseId}/expenses`, {
+    token, form: fileForm(png, 'receipt.png', 'image/png', { amount: '7.5', description: 'Paracetamol given at the visit' }),
+  });
+  assert.equal((await submit(tokens.docFar)).status, 404, 'only providers on the order');
+  const created = await submit(tokens.docArea);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const expense = created.body.data;
+  assert.equal(expense.status, 'PENDING');
+  assert.equal(expense.amount, 7.5);
+  assert.equal('receipt_file_key' in expense, false, 'storage keys never leave the server');
+  assert.equal((await api('POST', `/cases/${caseId}/expenses`, {
+    token: tokens.docArea, body: { amount: 1, description: 'no receipt' },
+  })).status, 400, 'a receipt is required');
+
+  const patientView = (await api('GET', `/cases/${caseId}`, { token: tokens.patient })).body.data;
+  assert.equal('expenses' in patientView, false, 'patients never see expenses');
+  assert.equal(patientView.invoice.final_amount, invoiceBefore, 'and are never charged for them');
+  const providerView = (await api('GET', `/cases/${caseId}`, { token: tokens.docArea })).body.data;
+  assert.equal(providerView.case_actions.can_add_expense, true);
+  assert.equal(providerView.expenses.length, 1);
+
+  const awaiting = await api('GET', '/earnings/expenses?status=PENDING', { token: tokens.admin });
+  assert.ok(awaiting.body.data.some((row) => row.id === expense.id));
+  assert.ok(awaiting.body.summary.awaiting_review_total >= 7.5);
+  assert.equal((await api('GET', `/earnings/expenses/${expense.id}/receipt`, { token: tokens.docFar })).status, 404);
+  assert.equal((await api('GET', `/earnings/expenses/${expense.id}/receipt`, { token: tokens.docArea })).status, 200);
+
+  assert.equal((await api('PATCH', `/earnings/expenses/${expense.id}`, { token: tokens.admin, body: { action: 'reject' } })).status, 400,
+    'a rejection needs a reason');
+  const approved = await api('PATCH', `/earnings/expenses/${expense.id}`, { token: tokens.admin, body: { action: 'approve' } });
+  assert.equal(approved.body.data.status, 'APPROVED');
+  assert.equal((await api('PATCH', `/earnings/expenses/${expense.id}`, { token: tokens.admin, body: { action: 'approve' } })).status, 409);
+
+  const balances = (await api('GET', '/earnings/balances', { token: tokens.admin })).body.data;
+  const mine = balances.find((row) => row.provider_id === ids['doc.area@test.io']);
+  assert.ok(mine.expenses_pending_total >= 7.5);
+  assert.equal(mine.owed_total, Number((mine.pending_total + mine.expenses_pending_total).toFixed(3)));
+
+  const payout = await api('POST', '/earnings/payouts', {
+    token: tokens.admin, body: { provider_id: ids['doc.area@test.io'], method: 'CASH' },
+  });
+  assert.equal(payout.status, 201, JSON.stringify(payout.body));
+  assert.equal(Number(payout.body.data.payout.amount), mine.owed_total, 'earnings and approved expenses are paid together');
+  assert.equal(payout.body.data.expenses_count >= 1, true);
+  const paid = (await api('GET', `/cases/${caseId}/expenses`, { token: tokens.docArea })).body.data[0];
+  assert.equal(paid.status, 'PAID');
+  await api('POST', `/cases/${caseId}/cancel`, { token: tokens.admin, body: {} });
+});
+
+test('identity: ID document once per account, guests verify ID and phone per order, tracking message logged', { skip }, async () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const setRules = (value) => pool.query("UPDATE app_settings SET value = $1::jsonb WHERE key = 'verification'", [JSON.stringify(value)]);
+  const blocked = await api('PUT', '/settings/verification', { token: tokens.admin, body: { require_id: true, require_phone: true } });
+  assert.equal(blocked.status, 400, 'phone checks cannot be required while no message provider is configured');
+  assert.equal((await api('PUT', '/settings/verification', { token: tokens.admin, body: { require_id: true, require_phone: false } })).status, 200);
+  try {
+    const publicSettings = await api('GET', '/settings/public');
+    assert.deepEqual(publicSettings.body.data.verification, { require_id: true, require_phone: false });
+
+    // Registered patient: ID once, then every order goes through.
+    const orderBody = { area_id: ids.area, items: [{ type: 'SERVICE', id: ids['Home doctor visit'] }], recipient_gender: 'MALE', recipient_age_group: 'ADULT' };
+    const refused = await api('POST', '/cases', { token: tokens.patient, body: orderBody });
+    assert.equal(refused.status, 403);
+    assert.equal(refused.body.code, 'VERIFICATION_REQUIRED');
+    assert.deepEqual(refused.body.details.missing, ['id_document']);
+    const uploaded = await api('POST', '/verification/id-document', { token: tokens.patient, form: fileForm(png, 'id.png', 'image/png') });
+    assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+    const status = (await api('GET', '/verification/status', { token: tokens.patient })).body.data;
+    assert.equal(status.id_document_uploaded, true);
+    const ordered = await api('POST', '/cases', { token: tokens.patient, body: orderBody });
+    assert.equal(ordered.status, 201, JSON.stringify(ordered.body));
+    assert.equal('identity' in ordered.body.data, false, 'only admins see identity details');
+    assert.equal('patient_has_id_document' in ordered.body.data.case, false);
+    const adminOrder = (await api('GET', `/cases/${ordered.body.data.case.id}`, { token: tokens.admin })).body.data;
+    assert.equal(adminOrder.identity.id_document_path, `/verification/id-documents/patients/${ids.patient}`);
+    assert.equal((await api('GET', adminOrder.identity.id_document_path, { token: tokens.admin })).status, 200);
+    assert.equal((await api('GET', adminOrder.identity.id_document_path, { token: tokens.patient })).status, 403);
+    const messages = (await api('GET', adminOrder.identity.messages_path, { token: tokens.admin })).body.data;
+    assert.deepEqual(messages.map((m) => [m.kind, m.channel, m.status]), [['ORDER_TRACKING', 'LOG', 'LOGGED']],
+      'the tracking-link message is recorded (log driver: no provider configured)');
+
+    // Guests: ID + phone code on every order.
+    await setRules({ require_id: true, require_phone: true });
+    const guestBody = {
+      guest_name: 'Verified Guest', guest_phone: '0781112233', address: 'Abdoun, building 4', area_id: ids.area,
+      items: [{ type: 'SERVICE', id: ids['Home doctor visit'] }], recipient_gender: 'FEMALE', recipient_age_group: 'ADULT',
+    };
+    const noProof = await api('POST', '/cases/public', { body: guestBody });
+    assert.deepEqual(noProof.body.details?.missing, ['phone', 'id_document']);
+
+    const idUpload = await api('POST', '/verification/id-document', { form: fileForm(png, 'id.png', 'image/png') });
+    assert.equal(idUpload.status, 201);
+    const codeRequest = await api('POST', '/verification/phone/request', { body: { phone: '0781112233' } });
+    assert.equal(codeRequest.status, 200, JSON.stringify(codeRequest.body));
+    assert.match(codeRequest.body.data.dev_code, /^\d{6}$/, 'outside production, with no provider, the code is returned for testing');
+    assert.equal((await api('POST', '/verification/phone/request', { body: { phone: '0612345678' } })).body.code, 'INVALID_PHONE',
+      'landlines and foreign numbers cannot receive the code');
+    const wrong = await api('POST', '/verification/phone/confirm', {
+      body: { phone: '0781112233', code: codeRequest.body.data.dev_code === '000000' ? '111111' : '000000' },
+    });
+    assert.equal(wrong.body.code, 'INVALID_CODE');
+    const confirmed = await api('POST', '/verification/phone/confirm', { body: { phone: '+962 78 111 2233', code: codeRequest.body.data.dev_code } });
+    assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+
+    const otherPhone = await api('POST', '/cases/public', {
+      body: { ...guestBody, guest_phone: '0790000001', id_document_token: idUpload.body.data.id_document_token,
+        phone_verification_token: confirmed.body.data.verification_token },
+    });
+    assert.deepEqual(otherPhone.body.details?.missing, ['phone'], 'the code proves one number only');
+    const guestOrder = await api('POST', '/cases/public', {
+      body: { ...guestBody, id_document_token: idUpload.body.data.id_document_token,
+        phone_verification_token: confirmed.body.data.verification_token },
+    });
+    assert.equal(guestOrder.status, 201, JSON.stringify(guestOrder.body));
+    const guestCase = (await pool.query('SELECT id FROM cases WHERE guest_name = $1 ORDER BY created_at DESC LIMIT 1', ['Verified Guest'])).rows[0];
+    const guestAdmin = (await api('GET', `/cases/${guestCase.id}`, { token: tokens.admin })).body.data;
+    assert.equal(guestAdmin.identity.phone_verified, true);
+    assert.equal((await api('GET', guestAdmin.identity.id_document_path, { token: tokens.admin })).status, 200);
+    const reused = await api('POST', '/cases/public', {
+      body: { ...guestBody, id_document_token: idUpload.body.data.id_document_token,
+        phone_verification_token: confirmed.body.data.verification_token },
+    });
+    assert.equal(reused.body.code, 'ID_DOCUMENT_EXPIRED', 'an uploaded ID serves one order');
+
+    for (const caseId of [ordered.body.data.case.id, guestCase.id]) {
+      await api('POST', `/cases/${caseId}/cancel`, { token: tokens.admin, body: {} });
+    }
+  } finally {
+    await setRules({ require_id: false, require_phone: false });
+  }
 });
 
 test('deleting a patient is a soft delete that keeps their cases', { skip }, async () => {

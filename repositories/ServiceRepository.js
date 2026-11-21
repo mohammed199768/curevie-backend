@@ -7,39 +7,79 @@ class ServiceRepository extends BaseRepository {
 
   // --- Categories ---
 
-  async listCategories({ search } = {}, { limit, offset } = {}, db = null) {
+  /**
+   * Groups in the admin's order. `active_count` = orderable, non-system services in the group.
+   * @param {{ search?, service_kind?, is_specialized? }} filters
+   */
+  async listCategories({ search, service_kind: serviceKind, is_specialized: isSpecialized } = {}, { limit, offset } = {}, db = null) {
     const params = [];
-    let whereSql = '';
+    const where = [];
     if (search) {
       params.push(`%${search}%`);
-      whereSql = 'WHERE name ILIKE $1';
+      where.push(`(c.name ILIKE $${params.length} OR c.name_ar ILIKE $${params.length} OR c.name_en ILIKE $${params.length})`);
     }
+    if (serviceKind) {
+      params.push(serviceKind);
+      where.push(`c.service_kind = $${params.length}`);
+    }
+    if (typeof isSpecialized !== 'undefined') {
+      params.push(isSpecialized);
+      where.push(`c.is_specialized = $${params.length}`);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const countResult = await this._query(
-      `SELECT COUNT(*)::int AS total FROM service_categories ${whereSql}`,
+      `SELECT COUNT(*)::int AS total FROM service_categories c ${whereSql}`,
       params, db
     );
     params.push(limit);
     params.push(offset);
     const dataResult = await this._query(
-      `SELECT id, name, description, created_at
-       FROM service_categories ${whereSql}
-       ORDER BY created_at DESC
+      `SELECT c.id, c.name, c.description, c.name_ar, c.name_en, c.description_ar, c.description_en,
+              c.slug, c.service_kind, c.sort_order, c.is_specialized, c.created_at,
+              (SELECT COUNT(*)::int FROM services s
+               WHERE s.category_id = c.id AND s.is_active = TRUE AND s.system_key IS NULL) AS active_count
+       FROM service_categories c ${whereSql}
+       ORDER BY c.sort_order ASC, c.created_at DESC, c.id ASC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params, db
     );
     return { data: dataResult.rows, total: countResult.rows[0].total };
   }
 
-  async createCategory({ name, description }, db = null) {
+  async createCategory({
+    name, description, name_ar: nameAr, name_en: nameEn, description_ar: descriptionAr, description_en: descriptionEn,
+    service_kind: serviceKind, is_specialized: isSpecialized,
+  }, db = null) {
     return this._queryOne(
-      'INSERT INTO service_categories (name, description) VALUES ($1, $2) RETURNING *',
-      [name, description || null], db
+      `INSERT INTO service_categories
+        (name, description, name_ar, name_en, description_ar, description_en, service_kind, is_specialized, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+               COALESCE((SELECT MAX(sort_order) + 1 FROM service_categories), 1))
+       RETURNING *`,
+      [name, description || null, nameAr || null, nameEn || null, descriptionAr || null, descriptionEn || null,
+        serviceKind || null, Boolean(isSpecialized)],
+      db
     );
   }
 
+  /** Sets sort_order = position (1-based) for each id, in one statement. */
+  async reorder(table, ids, db = null) {
+    if (!['services', 'service_categories'].includes(table)) throw new Error(`Cannot reorder ${table}`);
+    const result = await this._query(
+      `UPDATE ${table} t SET sort_order = o.position
+       FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, position)
+       WHERE t.id = o.id
+       RETURNING t.id`,
+      [ids], db
+    );
+    return result.rowCount;
+  }
+
   async updateCategory(id, data, db = null) {
-    const allowedFields = ['name', 'description'];
+    const allowedFields = [
+      'name', 'description', 'name_ar', 'name_en', 'description_ar', 'description_en', 'service_kind', 'is_specialized',
+    ];
     const sets = [];
     const values = [];
     for (const field of allowedFields) {
@@ -55,7 +95,7 @@ class ServiceRepository extends BaseRepository {
       row: await this._queryOne(
         `UPDATE service_categories SET ${sets.join(', ')}
          WHERE id = $${values.length}
-         RETURNING id, name, description, created_at`,
+         RETURNING *`,
         values, db
       ),
     };
@@ -70,13 +110,19 @@ class ServiceRepository extends BaseRepository {
 
   // --- Services ---
 
-  async listServices({ search, category_id, is_active, is_vip_exclusive, service_kind } = {}, { limit, offset } = {}, db = null) {
-    const where = [];
+  async listServices({ search, category_id, is_active, is_vip_exclusive, service_kind, is_popular } = {}, { limit, offset } = {}, db = null) {
+    // System items (e.g. the lab home-visit fee) are added by the server and never listed.
+    const where = ['s.system_key IS NULL'];
     const params = [];
 
     if (search) {
       params.push(`%${search}%`);
-      where.push(`(s.name ILIKE $${params.length} OR s.description ILIKE $${params.length})`);
+      where.push(`(s.name ILIKE $${params.length} OR s.name_ar ILIKE $${params.length}
+        OR s.name_en ILIKE $${params.length} OR s.description ILIKE $${params.length})`);
+    }
+    if (typeof is_popular !== 'undefined') {
+      params.push(is_popular);
+      where.push(`s.is_popular = $${params.length}`);
     }
     if (category_id) {
       params.push(category_id);
@@ -109,10 +155,10 @@ class ServiceRepository extends BaseRepository {
     params.push(limit);
     params.push(offset);
     const dataResult = await this._query(
-      `SELECT s.*, c.name AS category_name
+      `SELECT s.*, c.name AS category_name, c.name_ar AS category_name_ar, c.name_en AS category_name_en
        FROM services s LEFT JOIN service_categories c ON s.category_id = c.id
        ${whereSql}
-       ORDER BY s.created_at DESC
+       ORDER BY s.sort_order ASC, s.created_at DESC, s.id ASC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params, db
     );
@@ -122,16 +168,16 @@ class ServiceRepository extends BaseRepository {
   async createService(
     {
       name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id,
-      is_vip_exclusive, provider_share_type, provider_share_value,
+      is_vip_exclusive, provider_share_type, provider_share_value, is_popular, requires_fasting,
     },
     db = null
   ) {
     return this._queryOne(
       `INSERT INTO services (
         name, name_ar, name_en, description, description_ar, description_en, price, service_kind, category_id,
-        is_vip_exclusive, provider_share_type, provider_share_value
+        is_vip_exclusive, provider_share_type, provider_share_value, is_popular, requires_fasting
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [
         name,
         name_ar || null,
@@ -145,6 +191,8 @@ class ServiceRepository extends BaseRepository {
         Boolean(is_vip_exclusive),
         provider_share_type ?? null,
         provider_share_value ?? null,
+        Boolean(is_popular),
+        Boolean(requires_fasting),
       ],
       db
     );
@@ -156,7 +204,9 @@ class ServiceRepository extends BaseRepository {
               s.price, s.service_kind, s.category_id,
               s.is_vip_exclusive, s.is_active, s.image_url, s.created_at, s.updated_at,
               s.provider_share_type, s.provider_share_value,
-              c.name AS category_name, c.description AS category_description
+              s.sort_order, s.is_popular, s.requires_fasting, s.source_name, s.system_key,
+              c.name AS category_name, c.description AS category_description,
+              c.name_ar AS category_name_ar, c.name_en AS category_name_en
        FROM services s LEFT JOIN service_categories c ON s.category_id = c.id
        WHERE s.id = $1`,
       [id], db
@@ -181,6 +231,8 @@ class ServiceRepository extends BaseRepository {
         'is_active',
         'provider_share_type',
         'provider_share_value',
+        'is_popular',
+        'requires_fasting',
       ],
       db
     );
@@ -199,7 +251,7 @@ class ServiceRepository extends BaseRepository {
       this._query(
         `SELECT service_kind, category_id, COUNT(*)::int AS count
          FROM services
-         WHERE is_active = TRUE AND is_vip_exclusive = FALSE
+         WHERE is_active = TRUE AND is_vip_exclusive = FALSE AND system_key IS NULL
          GROUP BY service_kind, category_id`,
         [], db
       ),

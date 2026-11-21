@@ -3,6 +3,10 @@ const pool = require('../../config/db');
 const { AppError } = require('../../middlewares/errorHandler');
 const CaseRepository = require('../../repositories/CaseRepository');
 const ChatRepository = require('../../repositories/ChatRepository');
+const SettingsRepository = require('../../repositories/SettingsRepository');
+const InsuranceRepository = require('../../repositories/InsuranceRepository');
+const verification = require('../verification/verification.service');
+const messaging = require('../../utils/messaging');
 const events = require('./case.events');
 const { t } = require('../../utils/i18n/ar');
 const { toPublicMediaUrl } = require('../../utils/storage');
@@ -13,10 +17,14 @@ const {
   CASE_STATUS,
   SERVICE_STATUS,
   FINAL_CASE_STATUSES,
+  PARTNER_SETTING_KEYS,
+  SYSTEM_SERVICES,
 } = require('./case.constants');
 
 const caseRepo = new CaseRepository(pool);
 const chatRepo = new ChatRepository(pool);
+const settingsRepo = new SettingsRepository(pool);
+const insuranceRepo = new InsuranceRepository(pool);
 
 const MONEY_EPSILON = 0.0005;
 
@@ -188,13 +196,29 @@ function serviceActions(service, caseRow, user) {
   };
 }
 
+const IDENTITY_FIELDS = ['patient_phone_verified_at', 'patient_has_id_document', 'guest_phone_verified_at', 'guest_has_id_document'];
+
 function shapeCaseRow(row, user) {
   const shaped = { ...row };
   if (user.role === 'PATIENT') {
     delete shaped.patient_is_vip;
     delete shaped.cancelled_by;
   }
+  if (user.role !== 'ADMIN') IDENTITY_FIELDS.forEach((field) => delete shaped[field]);
   return shaped;
+}
+
+/** Admin only: was the phone verified, where to open the ID document and the messages sent. */
+function identityView(caseRow) {
+  const guest = caseRow.patient_id == null;
+  const hasDocument = guest ? caseRow.guest_has_id_document : caseRow.patient_has_id_document;
+  return {
+    phone_verified: Boolean(guest ? caseRow.guest_phone_verified_at : caseRow.patient_phone_verified_at),
+    id_document_path: hasDocument
+      ? (guest ? `/verification/id-documents/cases/${caseRow.id}` : `/verification/id-documents/patients/${caseRow.patient_id}`)
+      : null,
+    messages_path: `/verification/cases/${caseRow.id}/messages`,
+  };
 }
 
 function shapeInvoice(invoice, user, isLead) {
@@ -210,6 +234,46 @@ function shapeInvoice(invoice, user, isLead) {
   }
   if (user.role === 'PROVIDER' && !isLead) return null;
   return invoice;
+}
+
+/**
+ * Patients see provider uploads once the admin reviewed and closed the case. Lab results are the
+ * exception: the lab's final PDF reaches the patient as soon as it is uploaded.
+ */
+function isFileReleasedToPatient(caseRow, file) {
+  return caseRow.status === CASE_STATUS.CLOSED || file.service_kind === 'LAB';
+}
+
+/**
+ * Insurance details of an insurance lab order, per role. Patients never see what the lab owes
+ * Curevie; they see what they pay (their share + the home-visit fee).
+ */
+function shapeInsurance(caseRow, request, services, user) {
+  if (!request) return null;
+  const fee = services.find((line) => line.service_system_key === SYSTEM_SERVICES.LAB_HOME_VISIT
+    && line.status !== SERVICE_STATUS.CANCELLED);
+  const feeAmount = fee ? Number(fee.bundle_price) : 0;
+  const base = {
+    status: request.status,
+    tests_description: request.tests_description,
+    patient_amount: request.patient_amount,
+    home_visit_fee: feeAmount,
+    amount_to_pay: request.patient_amount == null ? null : toMoney(Number(request.patient_amount) + feeAmount),
+    quote_notes: request.quote_notes,
+    quoted_at: request.quoted_at,
+    decided_at: request.decided_at,
+    card_file_name: request.card_file_name,
+    created_at: request.created_at,
+  };
+  if (user.role === 'PATIENT') return base;
+  return {
+    ...base,
+    card_download_path: `/cases/${caseRow.id}/insurance/card`,
+    lab_owes_amount: request.lab_owes_amount,
+    receivable_status: request.receivable_status,
+    receivable_updated_at: request.receivable_updated_at,
+    receivable_notes: user.role === 'ADMIN' ? request.receivable_notes : undefined,
+  };
 }
 
 function shapeFile(caseId, file) {
@@ -236,9 +300,8 @@ async function buildCaseView(caseRow, user) {
     visibleFiles = files.filter((f) => myServiceIds.has(f.case_service_id));
     visibleAppointments = appointments.filter((a) => myServiceIds.has(a.case_service_id));
   }
-  // Patients see provider uploads once the admin reviewed and closed the case.
-  if (user.role === 'PATIENT' && caseRow.status !== CASE_STATUS.CLOSED) {
-    visibleFiles = [];
+  if (user.role === 'PATIENT') {
+    visibleFiles = visibleFiles.filter((file) => isFileReleasedToPatient(caseRow, file));
   }
   if (user.role !== 'ADMIN') {
     services = services.map(({ notes, ...rest }) => (user.role === 'PROVIDER' ? { ...rest, notes } : rest));
@@ -250,6 +313,17 @@ async function buildCaseView(caseRow, user) {
     : user.role === 'PROVIDER' ? services.filter((s) => s.provider_id === user.id) : [];
   const lineEarnings = earningLines.length ? await earnings.earningsForLines(caseRow.id, earningLines) : new Map();
 
+  const insuranceRequest = caseRow.is_insurance ? await insuranceRepo.findByCase(caseRow.id) : null;
+  // The server refuses to start an insurance order before the patient approves; the flag says so too.
+  const insuranceAwaitsApproval = Boolean(insuranceRequest) && insuranceRequest.status !== 'APPROVED';
+  // Expenses are between the provider and Curevie: never shown to the patient.
+  const expenses = user.role === 'PATIENT' ? null : (await earnings.listExpenses({
+    caseId: caseRow.id,
+    providerId: user.role === 'PROVIDER' ? user.id : undefined,
+  }, { limit: 100, offset: 0 })).data;
+  const providerOnCase = user.role === 'PROVIDER'
+    && allServices.some((s) => s.provider_id === user.id && s.status !== SERVICE_STATUS.CANCELLED);
+
   const view = {
     case: shapeCaseRow(caseRow, user),
     services: services.map((service) => ({
@@ -257,10 +331,15 @@ async function buildCaseView(caseRow, user) {
       provider_avatar_url: toPublicMediaUrl(service.provider_avatar_url),
       ...(user.role === 'ADMIN' ? { provider_earning: lineEarnings.get(service.id) || null } : {}),
       ...(user.role === 'PROVIDER' && service.provider_id === user.id ? { my_earning: lineEarnings.get(service.id) || null } : {}),
-      actions: serviceActions(service, caseRow, user),
+      actions: insuranceAwaitsApproval
+        ? { ...serviceActions(service, caseRow, user), can_start: false }
+        : serviceActions(service, caseRow, user),
     })),
     appointments: visibleAppointments,
     provider_files: visibleFiles.map((file) => shapeFile(caseRow.id, file)),
+    insurance: shapeInsurance(caseRow, insuranceRequest, allServices, user),
+    ...(user.role === 'ADMIN' ? { identity: identityView(caseRow) } : {}),
+    ...(expenses ? { expenses } : {}),
     invoice: shapeInvoice(invoice, user, isLead),
     case_actions: {
       can_cancel: user.role === 'PATIENT'
@@ -269,6 +348,12 @@ async function buildCaseView(caseRow, user) {
           && !allServices.some((s) => [SERVICE_STATUS.IN_PROGRESS, SERVICE_STATUS.COMPLETED].includes(s.status)),
       can_close: user.role === 'ADMIN' && caseRow.status === CASE_STATUS.COMPLETED,
       can_add_appointment: user.role === 'ADMIN' && !FINAL_CASE_STATUSES.includes(caseRow.status),
+      can_add_services: providerOnCase && !FINAL_CASE_STATUSES.includes(caseRow.status),
+      can_add_expense: providerOnCase && caseRow.status !== CASE_STATUS.CANCELLED,
+      can_quote_insurance: providerOnCase && Boolean(insuranceRequest)
+        && ['SUBMITTED', 'QUOTED'].includes(insuranceRequest.status)
+        && allServices.some((s) => s.service_system_key === SYSTEM_SERVICES.LAB_INSURANCE_TESTS && s.provider_id === user.id),
+      can_decide_insurance: user.role === 'PATIENT' && insuranceRequest?.status === 'QUOTED',
     },
   };
 
@@ -321,11 +406,13 @@ async function createCase(user, input) {
     let patient = null;
     if (!isGuest) {
       const { rows } = await client.query(
-        `SELECT id, full_name, address, is_vip, vip_discount, deleted_at FROM patients WHERE id = $1`,
+        `SELECT id, full_name, phone, address, is_vip, vip_discount, deleted_at FROM patients WHERE id = $1`,
         [user.id]
       );
       patient = rows[0];
       if (!patient || patient.deleted_at) throw new AppError('Patient account not found', 403, 'FORBIDDEN');
+      // ID document / phone, once per account (setting "verification").
+      await verification.assertPatientCanOrder(client, patient.id);
     }
 
     const address = (input.address || '').trim() || patient?.address || null;
@@ -336,7 +423,7 @@ async function createCase(user, input) {
 
     const lines = input.items.map((item) => {
       const row = catalog.get(`${item.type}:${item.id}`);
-      if (!row) throw new AppError(`Item ${item.type} ${item.id} was not found`, 400, 'ITEM_NOT_FOUND');
+      if (!row || row.system_key) throw new AppError(`Item ${item.type} ${item.id} was not found`, 400, 'ITEM_NOT_FOUND');
       if (!row.is_active) throw new AppError(`"${row.item_name}" is not available`, 400, 'ITEM_INACTIVE');
       if (row.is_vip_exclusive && !patient?.is_vip) {
         throw new AppError(`"${row.item_name}" is available to VIP members only`, 403, 'VIP_ONLY');
@@ -360,7 +447,17 @@ async function createCase(user, input) {
       scheduled_for: input.scheduled_for || null,
       notes: input.notes || null,
       tracking_token_hash: trackingToken ? hashToken(trackingToken) : null,
+      recipient_gender: input.recipient_gender || null,
+      recipient_age_group: input.recipient_age_group || null,
     }, client);
+    if (isGuest) {
+      // Guests verify on every order: the ID uploaded just before, and the phone code.
+      await verification.applyGuestVerification(client, caseRow.id, {
+        guestPhone: input.guest_phone,
+        phoneToken: input.phone_verification_token,
+        idDocumentToken: input.id_document_token,
+      });
+    }
 
     for (const line of lines) {
       await caseRepo.insertCaseService({
@@ -374,8 +471,10 @@ async function createCase(user, input) {
       }, client);
     }
 
+    const partnerAssignments = await applyPartnerRules(client, { id: caseRow.id, patient_id: patient?.id || null });
+    const status = await syncCaseStatus(client, { id: caseRow.id, status: CASE_STATUS.PENDING }, user);
     await caseRepo.insertInvoice(caseRow.id, client);
-    await recomputeInvoice(client, caseRow.id, CASE_STATUS.PENDING);
+    await recomputeInvoice(client, caseRow.id, status);
     await caseRepo.incrementPackageOrders(
       lines.filter((line) => line.item.type === 'PACKAGE').map((line) => line.item.id),
       client
@@ -390,13 +489,21 @@ async function createCase(user, input) {
 
     return {
       caseId: caseRow.id,
+      referenceNumber: caseRow.reference_number,
+      phone: isGuest ? input.guest_phone : patient.phone,
       patientId: patient?.id || null,
+      patientName: isGuest ? input.guest_name : patient.full_name,
       sourceLabel: isGuest ? `${t('labels.guest')}: ${input.guest_name}` : patient.full_name,
       itemNames: lines.map((line) => line.row.item_name),
+      partnerAssignments,
     };
   });
 
   events.caseCreated(created);
+  notifyPartnerAssignments(created.caseId, created.patientId, created.patientName, created.partnerAssignments);
+  sendTrackingMessage({
+    caseId: created.caseId, referenceNumber: created.referenceNumber, phone: created.phone, trackingToken,
+  });
 
   if (isGuest) {
     return {
@@ -405,6 +512,200 @@ async function createCase(user, input) {
     };
   }
   return getCaseDetail(created.caseId, user);
+}
+
+/**
+ * Second of the two patient messages: the order number and where to follow the order
+ * (guests: the tracking page; patients: their order page). Fire and forget: never fails an order.
+ */
+function sendTrackingMessage({ caseId, referenceNumber, phone, trackingToken }) {
+  if (!phone) return;
+  const site = (process.env.PUBLIC_SITE_URL || 'https://www.curevie.net').replace(/\/$/, '');
+  const link = trackingToken ? `${site}/ar/track/${trackingToken}` : `${site}/ar/requests/${caseId}`;
+  messaging.send('ORDER_TRACKING', phone, { reference: referenceNumber, link }, { caseId });
+}
+
+// =====================================================================
+// Partner accounts and the lab home-visit fee
+// =====================================================================
+
+async function findSystemService(client, systemKey) {
+  const { rows } = await client.query('SELECT id, name, price FROM services WHERE system_key = $1', [systemKey]);
+  if (!rows[0]) throw new AppError(`Catalog item ${systemKey} is missing; run the migrations`, 500, 'SYSTEM_SERVICE_MISSING');
+  return rows[0];
+}
+
+/**
+ * Runs inside the transaction after lines are added to a case:
+ *  - adds the lab home-visit fee once when the case has lab work and no active fee line;
+ *  - cancels the fee when no lab work is left;
+ *  - assigns waiting LAB / RADIOLOGY lines to the partner account of that kind, if one is set.
+ * Returns the partner assignments made, for notifications after commit.
+ * @param {{ id: string, patient_id: string|null }} caseRow
+ */
+async function applyPartnerRules(client, caseRow) {
+  const [partners, feeSetting] = await Promise.all([
+    settingsRepo.get('routing.partners'),
+    settingsRepo.get('lab.home_visit_fee'),
+  ]);
+
+  let lines = await caseRepo.findServicesByCase(caseRow.id, client);
+  const active = lines.filter((line) => line.status !== SERVICE_STATUS.CANCELLED);
+  const feeLines = active.filter((line) => line.service_system_key === SYSTEM_SERVICES.LAB_HOME_VISIT);
+  const hasLabWork = active.some((line) => line.service_kind === 'LAB'
+    && line.service_system_key !== SYSTEM_SERVICES.LAB_HOME_VISIT);
+  const feeAmount = toMoney(feeSetting?.amount ?? 5);
+
+  if (hasLabWork && !feeLines.length && feeAmount > 0) {
+    const feeService = await findSystemService(client, SYSTEM_SERVICES.LAB_HOME_VISIT);
+    // The visit fee is charged in full: no VIP discount.
+    await caseRepo.insertCaseService({
+      case_id: caseRow.id,
+      item_type: 'SERVICE',
+      service_id: feeService.id,
+      item_name: feeService.name,
+      original_price: feeAmount,
+      bundle_price: feeAmount,
+    }, client);
+    lines = await caseRepo.findServicesByCase(caseRow.id, client);
+  } else if (!hasLabWork) {
+    for (const fee of feeLines.filter((line) => [SERVICE_STATUS.PENDING, SERVICE_STATUS.ASSIGNED,
+      SERVICE_STATUS.ACCEPTED].includes(line.status))) {
+      await caseRepo.updateServiceStatus(fee.id, { status: SERVICE_STATUS.CANCELLED }, client);
+    }
+  }
+
+  const assignments = [];
+  const partnerCache = new Map();
+  for (const line of lines) {
+    const settingKey = PARTNER_SETTING_KEYS[line.service_kind];
+    const partnerId = settingKey && partners?.[settingKey];
+    if (!partnerId || line.status !== SERVICE_STATUS.PENDING || line.provider_id) continue;
+
+    if (!partnerCache.has(partnerId)) partnerCache.set(partnerId, await caseRepo.findAssignableProvider(partnerId, client));
+    const partner = partnerCache.get(partnerId);
+    // A disabled or deleted partner leaves the line for the admin, as before.
+    if (!partner || partner.deleted_at || !partner.is_active) continue;
+
+    await caseRepo.updateServiceStatus(line.id, { status: SERVICE_STATUS.ASSIGNED, provider_id: partner.id }, client);
+    if (caseRow.patient_id) {
+      await chatRepo.upsertRoom({ caseServiceId: line.id, patientId: caseRow.patient_id, providerId: partner.id }, client);
+    }
+    await caseRepo.addLifecycleEvent({
+      case_id: caseRow.id,
+      case_service_id: line.id,
+      actor_id: null,
+      actor_role: 'SYSTEM',
+      event_type: 'PROVIDER_ASSIGNED',
+      notes: `${partner.full_name} -> ${line.item_name} (partner)`,
+    }, client);
+    assignments.push({ caseServiceId: line.id, providerId: partner.id, providerName: partner.full_name, itemName: line.item_name });
+  }
+  return assignments;
+}
+
+function notifyPartnerAssignments(caseId, patientId, patientName, assignments) {
+  if (!assignments?.length) return;
+  events.providersAssigned({ caseId, patientId, patientName, assignments });
+}
+
+// =====================================================================
+// Providers adding services to their order
+// =====================================================================
+
+// The kind of work each provider type does itself ("nursing does nursing things").
+const OWN_KIND_BY_PROVIDER_TYPE = { DOCTOR: 'MEDICAL', NURSE: 'NURSING', LAB_TECH: 'LAB', RADIOLOGY_TECH: 'RADIOLOGY' };
+
+/**
+ * A provider working on an order adds services to it. Items of the provider's own kind are assigned
+ * to them (ACCEPTED); lab / radiology items go to the partner account when one is set; anything else
+ * waits for the admin to assign. No patient approval (owner's rule); the invoice follows.
+ */
+async function addServicesByProvider(caseId, provider, { items, notes }) {
+  const result = await withTransaction(async (client) => {
+    const caseRow = await caseRepo.lockCase(caseId, client);
+    if (!caseRow) throw notFound();
+    if (FINAL_CASE_STATUSES.includes(caseRow.status)) {
+      throw new AppError(`The case is ${caseRow.status}`, 409, 'INVALID_CASE_STATUS');
+    }
+    const current = await caseRepo.getServiceStatuses(caseId, client);
+    if (!current.some((line) => line.provider_id === provider.id && line.status !== SERVICE_STATUS.CANCELLED)) {
+      throw notFound();
+    }
+    const me = await caseRepo.findAssignableProvider(provider.id, client);
+    if (!me || me.deleted_at || !me.is_active) throw new AppError('Provider account is disabled', 403, 'FORBIDDEN');
+
+    let patient = null;
+    if (caseRow.patient_id) {
+      const { rows } = await client.query('SELECT id, is_vip, vip_discount FROM patients WHERE id = $1', [caseRow.patient_id]);
+      patient = rows[0] || null;
+    }
+    const discountPercent = patient?.is_vip ? Math.min(Math.max(Number(patient.vip_discount) || 0, 0), 100) : 0;
+    const catalog = await loadCatalogItems(client, items);
+    const ownKind = OWN_KIND_BY_PROVIDER_TYPE[me.type];
+
+    const added = [];
+    for (const item of items) {
+      const row = catalog.get(`${item.type}:${item.id}`);
+      if (!row || row.system_key) throw new AppError(`Item ${item.type} ${item.id} was not found`, 400, 'ITEM_NOT_FOUND');
+      if (!row.is_active) throw new AppError(`"${row.item_name}" is not available`, 400, 'ITEM_INACTIVE');
+      if (row.is_vip_exclusive && !patient?.is_vip) {
+        throw new AppError(`"${row.item_name}" is available to VIP members only`, 403, 'VIP_ONLY');
+      }
+      const originalPrice = toMoney(row.price);
+      const line = await caseRepo.insertCaseService({
+        case_id: caseId,
+        item_type: item.type,
+        [ITEM_CATALOG[item.type].column]: item.id,
+        item_name: row.item_name,
+        original_price: originalPrice,
+        bundle_price: toMoney((originalPrice * (100 - discountPercent)) / 100),
+        notes: item.notes || notes || null,
+      }, client);
+
+      const selfAssigned = item.type === 'SERVICE' && row.kind === ownKind && !PARTNER_SETTING_KEYS[row.kind];
+      if (selfAssigned) {
+        await caseRepo.updateServiceStatus(line.id, { status: SERVICE_STATUS.ASSIGNED, provider_id: me.id }, client);
+        await caseRepo.updateServiceStatus(line.id, { status: SERVICE_STATUS.ACCEPTED }, client);
+        if (caseRow.patient_id) {
+          await chatRepo.upsertRoom({ caseServiceId: line.id, patientId: caseRow.patient_id, providerId: me.id }, client);
+        }
+      }
+      await caseRepo.addLifecycleEvent({
+        case_id: caseId,
+        case_service_id: line.id,
+        actor_id: me.id,
+        actor_role: 'PROVIDER',
+        event_type: 'SERVICE_ADDED_BY_PROVIDER',
+        notes: `${me.full_name} -> ${row.item_name}${selfAssigned ? ' (self)' : ''}`,
+      }, client);
+      added.push({ id: line.id, itemName: row.item_name, selfAssigned });
+    }
+
+    const partnerAssignments = await applyPartnerRules(client, caseRow);
+    const status = await syncCaseStatus(client, caseRow, provider);
+    await recomputeInvoice(client, caseId, status);
+    const detail = await caseRepo.findCaseById(caseId, client);
+    return { caseRow, me, added, partnerAssignments, status, patientName: detail?.patient_name };
+  });
+
+  const { caseRow, me, added, partnerAssignments, status, patientName } = result;
+  events.servicesAddedByProvider({
+    caseId,
+    patientId: caseRow.patient_id,
+    providerName: me.full_name,
+    itemNames: added.map((line) => line.itemName),
+    waitingForAdmin: added.some((line) => !line.selfAssigned),
+  });
+  notifyPartnerAssignments(caseId, caseRow.patient_id, patientName, partnerAssignments);
+  events.emitCaseUpdated({
+    caseId,
+    status,
+    patientId: caseRow.patient_id,
+    providerIds: [me.id, ...partnerAssignments.map((a) => a.providerId)],
+    event: 'SERVICE_ADDED',
+  });
+  return getCaseDetail(caseId, provider);
 }
 
 async function listCases(user, query) {
@@ -559,13 +860,21 @@ async function getCandidates(caseId, serviceId, { includeAll = false } = {}) {
   if (!service) throw new AppError('Case service not found for this case', 404, 'CASE_SERVICE_NOT_FOUND');
 
   const allowedTypes = PROVIDER_TYPES_BY_KIND[service.service_kind] || PROVIDER_TYPES_BY_KIND.MEDICAL;
-  const providers = await caseRepo.findCandidateProviders({ areaId: caseRow.area_id, allowedTypes, includeAll });
+  const providers = await caseRepo.findCandidateProviders({
+    areaId: caseRow.area_id,
+    allowedTypes,
+    includeAll,
+    recipientGender: caseRow.recipient_gender,
+    recipientAgeGroup: caseRow.recipient_age_group,
+  });
 
   return {
     case_service_id: service.id,
     service_kind: service.service_kind,
     allowed_provider_types: allowedTypes,
     area_id: caseRow.area_id,
+    recipient_gender: caseRow.recipient_gender,
+    recipient_age_group: caseRow.recipient_age_group,
     providers: providers.map((provider) => ({ ...provider, avatar_url: toPublicMediaUrl(provider.avatar_url) })),
   };
 }
@@ -596,6 +905,13 @@ async function providerTransition(caseId, serviceId, provider, action, { reason 
     if (!service || service.provider_id !== provider.id) throw new AppError('Service not found', 404, 'NOT_FOUND');
     if (FINAL_CASE_STATUSES.includes(caseRow.status)) {
       throw new AppError(`The case is ${caseRow.status}`, 409, 'INVALID_CASE_STATUS');
+    }
+    // An insurance lab order waits for the patient to approve the lab's amount before work starts.
+    if (action === 'start' && caseRow.is_insurance) {
+      const request = await insuranceRepo.findByCase(caseId, client);
+      if (request && request.status !== 'APPROVED') {
+        throw new AppError('The patient has not approved the insurance amount yet', 409, 'INSURANCE_NOT_APPROVED');
+      }
     }
     if (!transition.from.includes(service.status)) {
       throw new AppError(
@@ -682,6 +998,8 @@ async function cancelService(caseId, serviceId, admin, reason) {
       event_type: 'SERVICE_CANCELLED',
       notes: reason || service.item_name,
     }, client);
+    // Cancelling the last lab test also cancels the lab home-visit fee.
+    await applyPartnerRules(client, caseRow);
 
     const status = await syncCaseStatus(client, caseRow, admin);
     await recomputeInvoice(client, caseId, status, { forbidOverpaid: true });
@@ -956,7 +1274,10 @@ async function getTrackingView(caseId) {
 
   return {
     id: caseRow.id,
-    reference: `#${caseRow.id.slice(0, 8).toUpperCase()}`,
+    reference: `#${caseRow.reference_number}`,
+    reference_number: caseRow.reference_number,
+    recipient_gender: caseRow.recipient_gender,
+    recipient_age_group: caseRow.recipient_age_group,
     status: caseRow.status,
     created_at: caseRow.created_at,
     scheduled_for: caseRow.scheduled_for,
@@ -1040,6 +1361,7 @@ async function getProviderRatings(providerId, { page, limit }) {
 }
 
 module.exports = {
+  isFileReleasedToPatient,
   // exported for tests
   deriveCaseStatus,
   toMoney,
@@ -1047,11 +1369,19 @@ module.exports = {
   // shared with sibling routers
   withTransaction,
   recomputeInvoice,
+  syncCaseStatus,
+  applyPartnerRules,
+  notifyPartnerAssignments,
+  sendTrackingMessage,
+  findSystemService,
+  actorRole,
   loadAccessibleCase,
   caseRepo,
   chatRepo,
+  insuranceRepo,
   // operations
   createCase,
+  addServicesByProvider,
   getCaseDetail,
   listCases,
   assignTeam,

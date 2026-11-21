@@ -138,7 +138,7 @@ class PatientRepository extends BaseRepository {
   async getRecentCases(patientId, limit = 5, db = null) {
     const [rows, count] = await Promise.all([
       this._query(
-        `SELECT c.id, c.status, c.created_at, c.scheduled_for,
+        `SELECT c.id, c.reference_number, c.status, c.created_at, c.scheduled_for,
                 (SELECT ARRAY_AGG(cs.item_name ORDER BY cs.created_at) FROM case_services cs
                  WHERE cs.case_id = c.id AND cs.status <> 'CANCELLED') AS item_names
          FROM cases c

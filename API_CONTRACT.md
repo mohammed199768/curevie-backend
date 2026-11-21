@@ -97,6 +97,13 @@ RADIOLOGY → RADIOLOGY_TECH, DOCTOR; LAB → LAB_TECH, NURSE, DOCTOR; PACKAGE �
 
 A **case** is one order. It has **line items** (`services[]`, table `case_services`), each assigned to one provider.
 
+Every case has `reference_number`: six digits (100000-999999), unique, never reused. Show it as `#123456`
+wherever an order is named; patients write it in the CliQ transfer note so payments can be matched.
+Admin search (`GET /cases?search=`) matches it with or without `#`.
+
+Every case also says who the care is for: `recipient_gender` (`MALE` | `FEMALE`) and
+`recipient_age_group` (`CHILD` = under 18 | `ADULT`). Both are `null` on orders placed before 2026-11-21.
+
 ### Status machine
 Line item (`services[].status`):
 `PENDING` (waiting for admin) → `ASSIGNED` (offered to a provider) → `ACCEPTED` (provider accepted) → `IN_PROGRESS` → `COMPLETED`;
@@ -115,6 +122,8 @@ Case (`case.status`) is derived automatically from its items:
   "scheduled_for": "2026-11-01T09:00:00+03:00",  // optional, future
   "notes": "optional",
   "items": [ { "type": "SERVICE", "id": "uuid", "notes": "optional" } ],   // 1..10, unique type+id
+  "recipient_gender": "MALE | FEMALE",     // who the care is for; optional in the API, always sent by the patient site
+  "recipient_age_group": "CHILD | ADULT",  // CHILD = under 18
   "guest_name": "only /public", "guest_phone": "only /public"
 }
 ```
@@ -127,7 +136,8 @@ Response 201:
 
 ### Guest tracking & claiming
 - `GET /cases/track/:token` (public) → `{ data: TrackingView }`
-  `TrackingView = { id, reference, status, created_at, scheduled_for, area_name_ar, area_name_en, cancel_reason,
+  `TrackingView = { id, reference ("#123456"), reference_number, recipient_gender, recipient_age_group,
+  status, created_at, scheduled_for, area_name_ar, area_name_en, cancel_reason,
   services: [{ id, item_type, item_name, service_kind, status, provider_name (first name), bundle_price }],
   appointments: [{ case_service_id, scheduled_at, type }], invoice: { final_amount, payment_status } | null }`
 - `POST /cases/claim` (patient) `{ tracking_token }` → `{ data: CaseView }`. Attaches the guest order to the account (token is consumed).
@@ -135,7 +145,8 @@ Response 201:
 ### Read
 - `GET /cases?page&limit(≤100)&status=A,B&service_status&patient_id&area_id&unassigned=true&search&from&to`
   → `{ data: { cases: [...], total, page, limit } }`.
-  Row: `id, status, patient_id, area_id, area_name_ar, area_name_en, scheduled_for, created_at, updated_at,
+  Row: `id, reference_number, recipient_gender, recipient_age_group,
+  status, patient_id, area_id, area_name_ar, area_name_en, scheduled_for, created_at, updated_at,
   lead_provider_id, lead_provider_name, cancel_reason, is_guest, patient_name, patient_phone (not for patients),
   services_count, item_names[], pending_assignment_count, final_amount, total_paid, remaining_amount, payment_status, is_patient_visible`.
   Providers: no money fields, plus `my_services: [{ id, item_name, status }]`; `service_status` filters on their own items.
@@ -145,7 +156,8 @@ Response 201:
 `CaseView`:
 ```
 {
-  case: { id, patient_id, is_guest, guest_name, guest_phone, guest_address, area_id, area_name_ar, area_name_en, address,
+  case: { id, reference_number, recipient_gender, recipient_age_group,
+          patient_id, is_guest, guest_name, guest_phone, guest_address, area_id, area_name_ar, area_name_en, address,
           scheduled_for, status, notes, lead_provider_id, lead_provider_name, cancelled_at, cancelled_by_role, cancel_reason,
           closed_at, admin_close_notes, created_at, updated_at,
           patient_name, patient_phone, patient_secondary_phone, patient_email, patient_dob, patient_gender,
@@ -171,7 +183,7 @@ Providers who are not the lead only see their own line items. Patients see `prov
 ### Admin
 | Method | Path | Body |
 |---|---|---|
-| GET | `/cases/:id/services/:serviceId/candidates?include_all=false` | → `{ data: { service_kind, allowed_provider_types, area_id, providers: [{ id, full_name, phone, type, avatar_url, is_available, type_match, covers_area, open_jobs, average_rating, total_ratings }] } }` ranked best first |
+| GET | `/cases/:id/services/:serviceId/candidates?include_all=false` | → `{ data: { service_kind, allowed_provider_types, area_id, recipient_gender, recipient_age_group, providers: [{ id, full_name, phone, type, avatar_url, is_available, gender, serves_children, serves_adults, type_match, gender_match, age_match, covers_area, open_jobs, average_rating, total_ratings }] } }` ranked best first: type, then gender, then age group, then area, availability, load, rating. `gender_match` / `age_match` are true when the order does not say. Ranking only: any provider can still be assigned. |
 | POST | `/cases/:id/assign-team` | `{ assignments: [{ case_service_id, provider_id }], lead_provider_id?: uuid\|null }` → `{ data: CaseView }`. Reassigning is allowed until the item is started. |
 | POST | `/cases/:id/appointments` | `{ case_service_id, scheduled_at, type?, notes? }` |
 | POST | `/cases/:id/services/:serviceId/cancel` | `{ reason? }` → CaseView. 409 `REFUND_REQUIRED` if paid more than the new total. |
@@ -209,7 +221,7 @@ Providers who are not the lead only see their own line items. Patients see `prov
 - `GET /cases/:id/report/download`, `GET /cases/:id/sick-leave/download` → PDF blob (patient: published + closed)
 
 ### Chat (patient ↔ assigned provider, per line item; guests have none)
-- `GET /cases/chat/rooms?case_id=` → `{ data: [{ id, case_id, case_service_id, service_name, service_status, case_status,
+- `GET /cases/chat/rooms?case_id=` → `{ data: [{ id, case_id, case_reference_number, case_service_id, service_name, service_status, case_status,
   patient_id, patient_name, provider_id, provider_name, provider_avatar_url, can_send, last_message_preview,
   last_message_file_name, last_message_sender_role, last_message_at, unread_count }] }`
 - `GET /cases/:id/chat-rooms` → same rows for one case
@@ -233,14 +245,14 @@ Patients:
 - `PUT /patients/:id/avatar` multipart `file` · `PUT /patients/:id/vip` (admin) · `DELETE /patients/:id` (admin, soft delete)
 
 Providers:
-- `POST /providers` admin `{ full_name, email, password, phone?, type: DOCTOR|NURSE|LAB_TECH|RADIOLOGY_TECH, area_ids?: uuid[] }`
+- `POST /providers` admin `{ full_name, email, password, phone?, type: DOCTOR|NURSE|LAB_TECH|RADIOLOGY_TECH, area_ids?: uuid[], gender?: MALE|FEMALE|null, serves_children?: boolean (default true), serves_adults?: boolean (default true) }`
 - `GET /providers` admin `?page&limit&search&type&is_active&is_available&area_id`
 - `GET /providers/me` provider · `PUT /providers/me/availability` `{ is_available }` (online/offline toggle)
-- `GET /providers/:id` / `PUT /providers/:id` — admin: `full_name, phone, type, is_active, is_available, area_ids`; self: `full_name, phone, is_available` only (403 otherwise)
+- `GET /providers/:id` / `PUT /providers/:id` — admin: `full_name, phone, type, is_active, is_available, area_ids, gender, serves_children, serves_adults`; self: `full_name, phone, is_available` only (403 otherwise)
 - `PUT /providers/:id/avatar` multipart `file` · `DELETE /providers/:id` admin (409 `PROVIDER_HAS_OPEN_JOBS`)
-- `GET /providers/:id/ratings?page&limit` (admin or self) → `{ summary: { total_ratings, average_rating }, data: [{ rating, comment, service_name, patient_name, created_at, case_id }], pagination }`
+- `GET /providers/:id/ratings?page&limit` (admin or self) → `{ summary: { total_ratings, average_rating }, data: [{ rating, comment, service_name, patient_name, created_at, case_id, case_reference_number }], pagination }`
 
-Provider object: `{ id, full_name, email, phone, type, is_active, is_available, avatar_url, areas: [{ id, slug, name_ar, name_en }], open_jobs, average_rating, total_ratings, created_at }`.
+Provider object: `{ id, full_name, email, phone, type, is_active, is_available, avatar_url, gender, serves_children, serves_adults, areas: [{ id, slug, name_ar, name_en }], open_jobs, average_rating, total_ratings, created_at }`.
 `is_active` = account enabled by admin (login); `is_available` = provider is online and accepting jobs.
 
 ---
@@ -250,7 +262,7 @@ Provider object: `{ id, full_name, email, phone, type, is_active, is_available, 
 - `GET /notifications?page&limit&unread_only` → `{ data, pagination, unread_count }`; `PUT /notifications/read-all`; `PUT /notifications/:id/read`; `DELETE /notifications/:id`.
   Notification `type`: `CASE_CREATED, CASE_ASSIGNED, CASE_UPDATED, CASE_COMPLETED, CASE_CANCELLED, CASE_CLOSED, APPOINTMENT_SCHEDULED, SERVICE_RATED, PAYMENT_RECEIVED, PAYMENT_PARTIAL, INVOICE_PAID, VIP_GRANTED, REPORT_PUBLISHED, CONTACT_MESSAGE, EARNINGS_PAID`; `data.case_id` links to the case.
 - `GET /reports/cases/financial?period=daily|monthly|yearly&year&month&from=YYYY-MM-DD&to=YYYY-MM-DD` (admin) →
-  `{ period, summary: { total_invoices, paid_invoices, partial_invoices, pending_invoices, cancelled_invoices, gross_revenue, net_revenue, pending_revenue, total_discounts, collected_revenue, payments_count }, cases: {...counts by status}, payment_methods, top_services: [{ service_name, item_type, service_kind, count, revenue }], daily_breakdown: [{ date, cases, revenue, collected }], case_register }`.
+  `{ period, summary: { total_invoices, paid_invoices, partial_invoices, pending_invoices, cancelled_invoices, gross_revenue, net_revenue, pending_revenue, total_discounts, collected_revenue, payments_count }, cases: {...counts by status}, payment_methods, top_services: [{ service_name, item_type, service_kind, count, revenue }], daily_breakdown: [{ date, cases, revenue, collected }], case_register: [{ case_id, case_reference_number, case_service_id, invoice_id, provider_id, provider_name, patient_name, service_name, item_type, service_kind, amount, service_status, payment_status, ... }] }`.
   Dates are Amman local days; `collected_revenue` counts payments received in the window.
 
 ---
@@ -288,6 +300,108 @@ A payout notifies the provider (`EARNINGS_PAID`) and emits `earnings:updated` to
 
 ---
 
+## 6b. Lab partner, insurance, provider additions, expenses, verification (2026-11-21)
+
+### Catalog: groups, order, most-requested
+- `GET /services/categories?service_kind=LAB&is_specialized=false&page&limit` (public) → `{ data: [{ id, name, name_ar, name_en,
+  description_ar, description_en, slug, service_kind, sort_order, is_specialized, active_count }], pagination }`, ordered by `sort_order`.
+  Lab groups have slugs `lab-blood`, `lab-diabetes`, `lab-kidney`, ... `lab-genetic_specialized` (is_specialized) and
+  `lab-drugs_toxicology` (is_specialized). Specialised groups belong behind a separate "more specialised tests" entry.
+- `GET /services?service_kind=LAB&category_id=&is_popular=true&search=&page&limit` (public) — `limit` default 10; never load a whole
+  group at once. Rows now include `sort_order, is_popular, requires_fasting, source_name, category_name_ar, category_name_en`.
+  Search matches `name`, `name_ar`, `name_en`, `description`. Ordered by `sort_order` (admin order).
+  System items (the home-visit fee, the insurance placeholder) never appear in lists, counts, or `GET /services/:id` (404).
+- Admin: `PUT /services/reorder { ids: [uuid…] }` and `PUT /services/categories/reorder { ids }` → `{ data: { updated } }`;
+  `sort_order` = position (1-based) of each id. Send the whole visible list in its new order.
+- Admin create/update service also accepts `is_popular`, `requires_fasting`. Categories accept `name_ar, name_en, description_ar,
+  description_en, service_kind, is_specialized` (create/update; `name` is still required by the category schema).
+
+### Partner accounts and the lab home-visit fee (settings)
+- `PUT /settings/routing.partners { lab_provider_id: uuid|null, radiology_provider_id: uuid|null }` (admin). The provider must be
+  active and of a suitable type (lab: LAB_TECH, NURSE, DOCTOR; radiology: RADIOLOGY_TECH, DOCTOR) else 400 `INVALID_PARTNER`.
+  When set, every new LAB / RADIOLOGY line goes straight to that account (status ASSIGNED, provider notified).
+- `PUT /settings/lab.home_visit_fee { amount }` (admin, default 5). Added once to any order that contains lab tests (and every
+  insurance order), never discounted, assigned to the lab, paid in full to the lab. Cancelled automatically with the last lab test.
+- `GET /settings/public` now → `{ data: { cliq, lab_home_visit_fee: number, verification: { require_id, require_phone } } }`.
+- Line items now carry `service_system_key`: `'lab_home_visit'` (the fee line), `'lab_insurance_tests'` (insurance placeholder) or null.
+
+### Lab results
+- Files a provider uploads on a LAB line are visible to the patient (in `provider_files` and via `GET /cases/:id/files/:fileId`) as
+  soon as they are uploaded. Other files keep the old rule (after the case is CLOSED).
+
+### Insurance lab requests
+- `POST /cases/insurance` (patient, multipart): `file` (insurance card, jpg/png/webp/pdf ≤20 MB) + `area_id`, `address?`,
+  `scheduled_for?`, `notes?`, `recipient_gender` (required), `recipient_age_group` (required). No items. → 201 `{ data: CaseView }`.
+  Verification rules apply (403 `VERIFICATION_REQUIRED`).
+- CaseView of an insurance order: `case.is_insurance = true` and `insurance`:
+  - patient: `{ status: SUBMITTED|QUOTED|APPROVED|DECLINED|CANCELLED, tests_description, patient_amount, home_visit_fee,
+    amount_to_pay (patient_amount + fee, null until quoted), quote_notes, quoted_at, decided_at, card_file_name, created_at }`
+  - provider/admin also: `card_download_path` (`/cases/:id/insurance/card`), `lab_owes_amount`, `receivable_status`
+    (PENDING|RECEIVED|WAIVED), `receivable_updated_at`; admin also `receivable_notes`.
+- `case_actions` adds `can_quote_insurance` (the lab on the order, status SUBMITTED/QUOTED) and `can_decide_insurance` (patient,
+  status QUOTED).
+- `PUT /cases/:id/insurance/quote` (the provider assigned to the insurance line) `{ tests_description, patient_amount, lab_owes_amount,
+  notes? }` → `{ data: CaseView }`. Re-quoting is allowed until the patient approves. The lab cannot START work before approval
+  (409 `INSURANCE_NOT_APPROVED`).
+- `POST /cases/:id/insurance/approve` (patient) / `POST /cases/:id/insurance/decline { reason? }` (patient; cancels the order).
+- `GET /cases/:id/insurance/card` — the card file (admin, the patient, providers on the order).
+- `GET /cases/insurance/requests?status&receivable_status&provider_id&page&limit` (admin) → `{ data: [{ case_id, reference_number,
+  case_status, status, tests_description, patient_amount, lab_owes_amount, receivable_status, receivable_updated_at,
+  receivable_notes, quoted_at, decided_at, created_at, patient_name, lab_provider_id, lab_provider_name, final_amount,
+  total_paid, payment_status }], summary: { receivable_pending, receivable_received }, pagination }`.
+- `PATCH /cases/:id/insurance/receivable { status: PENDING|RECEIVED|WAIVED, notes? }` (admin).
+- Money: the patient pays Curevie (CliQ, as usual) their amount + the fee; the lab earns that (PENDING earning, paid only by an
+  admin payout). `lab_owes_amount` is what the lab pays Curevie after the insurer pays the lab.
+
+### Providers add services to their order
+- `POST /cases/:id/services` (a provider with an active line on the order) `{ items: [{ type, id, notes? }], notes? }` → 201
+  `{ data: CaseView }`. Items of the provider's own kind (DOCTOR→MEDICAL, NURSE→NURSING, LAB_TECH→LAB, RADIOLOGY_TECH→RADIOLOGY)
+  are assigned to them (ACCEPTED); LAB/RADIOLOGY items go to the partner when set; everything else waits for the admin (PENDING).
+  No patient approval; the invoice is updated; patient and admins are notified. `case_actions.can_add_services` tells the app.
+
+### Provider expenses (reimbursed by Curevie, never billed to or shown to the patient)
+- `POST /cases/:id/expenses` (provider on the order, multipart): `file` (receipt image/PDF), `amount`, `description` → 201
+  `{ data: Expense }`. `case_actions.can_add_expense`.
+- `GET /cases/:id/expenses` (admin: all; provider: own) → `{ data: [Expense], summary }`. CaseView also has `expenses` for
+  admin (all) and provider (own); patients never.
+- `Expense = { id, case_id, case_reference_number, provider_id, provider_name, amount, description, receipt_file_name,
+  receipt_mime, status: PENDING|APPROVED|REJECTED|PAID, review_reason, reviewed_at, reviewed_by_name, payout_id, paid_at,
+  created_at, patient_name, receipt_path }`.
+- `GET /earnings/expenses?status&provider_id&page&limit` (admin), `GET /earnings/expenses/me` (provider) →
+  `{ data, summary: { awaiting_review_total, awaiting_review_count, approved_unpaid_total, paid_total }, pagination }`.
+- `PATCH /earnings/expenses/:id { action: approve|reject, reason? (required to reject) }` (admin; only PENDING, else 409).
+- `GET /earnings/expenses/:id/receipt` (admin, or the provider who sent it).
+- Payouts: `POST /earnings/payouts` also accepts `expense_ids`. With no ids it pays every PENDING earning AND every APPROVED expense.
+  Response adds `expenses_count`. `GET /earnings/balances` rows add `expenses_pending_total`, `expenses_pending_count`,
+  `expenses_awaiting_review`, `owed_total` (= pending_total + expenses_pending_total). Payout rows add `expenses_count`.
+
+### Identity document, phone verification, messages
+- Setting `verification { require_id, require_phone }` (admin `PUT /settings/verification`; `require_phone: true` is refused while no
+  WhatsApp/SMS provider is configured). Defaults: ID required, phone off.
+- Registered patients verify once: `POST /verification/id-document` (patient, multipart `file`) → 201 `{ data: { uploaded_at } }`;
+  phone: `POST /verification/phone/request { phone }` then `POST /verification/phone/confirm { phone, code }` with the profile
+  phone → `account_verified: true`. `GET /verification/status` (patient) → `{ data: { require_id, require_phone, phone,
+  phone_verified, id_document_uploaded, id_document_uploaded_at } }`.
+- Guests verify on every order: `POST /verification/id-document` (no token) → `{ data: { id_document_token, expires_at } }`;
+  `POST /verification/phone/request { phone }` → `{ data: { expires_in, channel, dev_code? } }` (`dev_code` only outside production
+  when no provider is configured); `POST /verification/phone/confirm { phone, code }` → `{ data: { verification_token, expires_in,
+  account_verified } }`. Then `POST /cases/public` with `id_document_token` and `phone_verification_token`.
+- Errors: 403 `VERIFICATION_REQUIRED` with `details: { missing: ['id_document' | 'phone', ...] }`; `INVALID_PHONE` (Jordanian mobile
+  only, e.g. 07XXXXXXXX), `TOO_MANY_CODES` (429, 3 per 10 min), `CODE_EXPIRED`, `INVALID_CODE`, `TOO_MANY_ATTEMPTS` (429),
+  `CODE_NOT_SENT` (502), `ID_DOCUMENT_EXPIRED` (an uploaded guest ID serves one order, 24 h).
+- After every order the patient/guest gets the second message: order number + link (guest: `/ar/track/{token}`; patient:
+  `/ar/requests/{id}`). Channel: WhatsApp, else SMS, else logged only.
+- Admin CaseView has `identity: { phone_verified, id_document_path | null, messages_path }`; open the ID with
+  `GET /verification/id-documents/patients/:id` or `/verification/id-documents/cases/:id`; messages via
+  `GET /verification/cases/:id/messages` → `[{ id, kind: PHONE_CODE|ORDER_TRACKING, channel: WHATSAPP|SMS|LOG, recipient, status:
+  SENT|FAILED|LOGGED, error, created_at }]`.
+
+### Order numbers in more places
+- `GET /cases/invoices` rows: `case_reference_number` (search matches it); earnings rows: `case_reference_number`;
+  patient detail `recent_cases[].reference_number`; socket `case:created` payload: `{ case_id, reference_number, at }`.
+
+---
+
 ## 7. Real-time (socket.io)
 
 Connect to the API origin (`https://api.curevie.net`, path `/socket.io`) with `auth: { token: <access token> }`.
@@ -300,7 +414,7 @@ Server → client:
 | `case:created` | `{ case_id, at }` | admins |
 | `case:updated` | `{ case_id, status, event, case_service_id, service_status, at }` | admins, the case patient, involved providers |
 | `case:assigned` | `{ case_id, case_service_id }` | the assigned provider |
-| `earnings:updated` | `{ payout_id }` or `{ earning_id }` | the provider |
+| `earnings:updated` | `{ payout_id }`, `{ earning_id }` or `{ expense_id }` (expense reviewed) | the provider |
 | `notification_unread_updated` | `{ unread_count }` | recipient |
 | `chat_unread_updated` | `{ unread_count, room_id, case_id }` | chat participants |
 | `new_message` | `Message` | sockets that joined the room |

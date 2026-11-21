@@ -93,7 +93,9 @@ function buildCaseReportHtml({
   logoDataUri,
   mergedPdfAttachmentCount = 0,
 }) {
-  const shortCaseId = String(caseRecord.id || '').slice(0, 8).toUpperCase() || '-';
+  const shortCaseId = caseRecord.reference_number
+    ? `#${caseRecord.reference_number}`
+    : String(caseRecord.id || '').slice(0, 8).toUpperCase() || '-';
   const closedAt = formatDate(caseRecord.closed_at);
   const generatedAt = formatDateTime(new Date());
   const serviceSummary = serviceNames.length ? serviceNames.join(' / ') : 'No case services available';

@@ -31,7 +31,11 @@ async function listCategories(req, res) {
   if (cached) return res.json(cached);
 
   const { page, limit, offset } = paginate(req.query);
-  const { data, total } = await serviceRepo.listCategories({ search: req.query.search }, { limit, offset });
+  const { data, total } = await serviceRepo.listCategories({
+    search: req.query.search,
+    service_kind: req.query.service_kind,
+    is_specialized: req.query.is_specialized,
+  }, { limit, offset });
   const response = { data, pagination: paginationMeta(total, page, limit) };
 
   await cache.set(cacheKey, response, 600);
@@ -80,6 +84,7 @@ async function listServices(req, res) {
     search: req.query.search,
     category_id: req.query.category_id,
     service_kind: req.query.service_kind,
+    is_popular: req.query.is_popular,
     is_active: isAdmin ? req.query.is_active : true,
     is_vip_exclusive: req.user ? req.query.is_vip_exclusive : false,
   };
@@ -101,7 +106,8 @@ async function listServices(req, res) {
 
 async function getServiceById(req, res) {
   const service = await serviceRepo.getServiceById(req.params.id);
-  if (!service || (!service.is_active && req.user?.role !== 'ADMIN')) {
+  // System items (lab home-visit fee) are internal: only admins can read them.
+  if (!service || ((!service.is_active || service.system_key) && req.user?.role !== 'ADMIN')) {
     throw new AppError('Service not found', 404, 'SERVICE_NOT_FOUND');
   }
   return res.json(presentService(service, { admin: req.user?.role === 'ADMIN' }));
@@ -145,8 +151,24 @@ async function uploadServiceImage(req, res) {
   return res.json(presentService(updated, { admin: true }));
 }
 
+async function reorderCategories(req, res) {
+  const updated = await serviceRepo.reorder('service_categories', req.body.ids);
+  auditCatalog(req, 'SERVICE_CATEGORIES_REORDERED', 'service_category', null, { count: updated });
+  await cache.del('services:*');
+  return res.json({ data: { updated } });
+}
+
+async function reorderServices(req, res) {
+  const updated = await serviceRepo.reorder('services', req.body.ids);
+  auditCatalog(req, 'SERVICES_REORDERED', 'service', null, { count: updated });
+  await cache.del('services:*');
+  return res.json({ data: { updated } });
+}
+
 module.exports = {
   listCategories,
+  reorderCategories,
+  reorderServices,
   createCategory,
   updateCategory,
   deleteCategory,

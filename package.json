@@ -12,7 +12,8 @@
     "test:unit": "node --test tests/unit.test.js tests/sessions.unit.test.js",
     "test:integration": "node --test tests/cases.integration.test.js",
     "db:seed:dev": "node config/seeds/dev_seed.js",
-    "db:seed:catalog": "node config/seeds/catalog_seed.js"
+    "db:seed:catalog": "node config/seeds/catalog_seed.js",
+    "db:seed:lab": "node config/seeds/lab_catalog_seed.js"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",

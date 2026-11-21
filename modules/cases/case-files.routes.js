@@ -10,7 +10,7 @@ const { uploadCaseFile } = require('../../utils/upload');
 const { savePrivateFile, readStoredFile, deleteStoredFile, mimeTypeForKey, sendFile } = require('../../utils/storage');
 const { logger } = require('../../utils/logger');
 const caseService = require('./case.service');
-const { SERVICE_STATUS, FINAL_CASE_STATUSES, CASE_STATUS } = require('./case.constants');
+const { SERVICE_STATUS, FINAL_CASE_STATUSES } = require('./case.constants');
 const schemas = require('./case.schemas');
 
 const router = express.Router();
@@ -73,7 +73,7 @@ async function loadReadableFile(req) {
   const file = await caseRepo.findProviderFile(req.params.id, req.params.fileId);
   if (!file) throw new AppError('File not found', 404, 'NOT_FOUND');
 
-  if (req.user.role === 'PATIENT' && caseRow.status !== CASE_STATUS.CLOSED) {
+  if (req.user.role === 'PATIENT' && !caseService.isFileReleasedToPatient(caseRow, file)) {
     throw new AppError('File not found', 404, 'NOT_FOUND');
   }
   if (req.user.role === 'PROVIDER'

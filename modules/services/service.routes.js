@@ -4,7 +4,13 @@ const { authenticate, guestOrAuthenticated, adminOnly } = require('../../middlew
 const { apiLimiter, readLimiter } = require('../../middlewares/rateLimiter');
 const validate = require('../../middlewares/validate');
 const { uploadImage } = require('../../utils/upload');
-const { categorySchema, createServiceSchema, updateServiceSchema, paginationSchema } = require('../../utils/schemas');
+const {
+  categorySchema,
+  categoriesQuerySchema,
+  createServiceSchema,
+  updateServiceSchema,
+  reorderSchema,
+} = require('../../utils/schemas');
 const asyncHandler = require('../../utils/asyncHandler');
 const controller = require('./service.controller');
 
@@ -19,16 +25,21 @@ const serviceQuerySchema = Joi.object({
   is_active: Joi.boolean(),
   is_vip_exclusive: Joi.boolean(),
   service_kind: Joi.string().valid('MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB'),
+  // "Most requested" first screen of a group.
+  is_popular: Joi.boolean(),
 });
 
 // Public catalog reads.
-router.get('/categories', guestOrAuthenticated, readLimiter, validate(paginationSchema, 'query'), asyncHandler(controller.listCategories));
+router.get('/categories', guestOrAuthenticated, readLimiter, validate(categoriesQuerySchema, 'query'), asyncHandler(controller.listCategories));
 router.get('/counts', readLimiter, asyncHandler(controller.getPublicCounts));
 router.get('/', guestOrAuthenticated, readLimiter, validate(serviceQuerySchema, 'query'), asyncHandler(controller.listServices));
 router.get('/:id', guestOrAuthenticated, readLimiter, validate(idParams, 'params'), asyncHandler(controller.getServiceById));
 
 // Admin catalog management.
 router.post('/categories', authenticate, adminOnly, apiLimiter, validate(categorySchema), asyncHandler(controller.createCategory));
+// Registered before '/categories/:id' and '/:id' so "reorder" is not read as an id.
+router.put('/categories/reorder', authenticate, adminOnly, apiLimiter, validate(reorderSchema), asyncHandler(controller.reorderCategories));
+router.put('/reorder', authenticate, adminOnly, apiLimiter, validate(reorderSchema), asyncHandler(controller.reorderServices));
 router.put(
   '/categories/:id',
   authenticate,

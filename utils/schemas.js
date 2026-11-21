@@ -82,6 +82,13 @@ const vipSchema = Joi.object({
 // =============================================
 // PROVIDERS
 // =============================================
+// Used to rank providers for an order's care recipient (gender, child/adult).
+const providerMatchingFields = {
+  gender: Joi.string().valid('MALE', 'FEMALE').allow(null),
+  serves_children: Joi.boolean(),
+  serves_adults: Joi.boolean(),
+};
+
 const createProviderSchema = Joi.object({
   full_name: Joi.string().min(2).max(100).required().trim(),
   email: Joi.string().email().required().lowercase().trim(),
@@ -89,6 +96,7 @@ const createProviderSchema = Joi.object({
   phone: phone,
   type: Joi.string().valid('DOCTOR', 'NURSE', 'LAB_TECH', 'RADIOLOGY_TECH').required(),
   area_ids: Joi.array().items(uuid).max(100).unique().default([]),
+  ...providerMatchingFields,
 });
 
 const updateProviderSchema = Joi.object({
@@ -98,6 +106,7 @@ const updateProviderSchema = Joi.object({
   is_active: Joi.boolean(),
   is_available: Joi.boolean(),
   area_ids: Joi.array().items(uuid).max(100).unique(),
+  ...providerMatchingFields,
 }).min(1);
 
 const providerAvailabilitySchema = Joi.object({
@@ -120,6 +129,17 @@ const providerListQuerySchema = Joi.object({
 const categorySchema = Joi.object({
   name: Joi.string().min(2).max(100).required().trim(),
   description: Joi.string().max(500).trim().allow('', null),
+  name_ar: Joi.string().trim().max(150).allow('', null),
+  name_en: Joi.string().trim().max(150).allow('', null),
+  description_ar: Joi.string().trim().max(1000).allow('', null),
+  description_en: Joi.string().trim().max(1000).allow('', null),
+  service_kind: Joi.string().valid('MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB').allow(null),
+  is_specialized: Joi.boolean(),
+});
+
+// Admin drag-and-drop order: the full list of ids in their new order.
+const reorderSchema = Joi.object({
+  ids: Joi.array().items(uuid).min(1).max(2000).unique().required(),
 });
 
 // Provider share of a catalog item: PERCENT of the line price or a FIXED amount; both null = default share.
@@ -149,6 +169,8 @@ const createServiceSchema = withProviderShare(Joi.object({
   service_kind: Joi.string().valid('MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB').default('MEDICAL'),
   category_id: uuid,
   is_vip_exclusive: Joi.boolean().default(false),
+  is_popular: Joi.boolean().default(false),
+  requires_fasting: Joi.boolean().default(false),
   ...providerShareFields,
 }));
 
@@ -164,6 +186,8 @@ const updateServiceSchema = withProviderShare(Joi.object({
   category_id: uuid,
   is_vip_exclusive: Joi.boolean(),
   is_active: Joi.boolean(),
+  is_popular: Joi.boolean(),
+  requires_fasting: Joi.boolean(),
   ...providerShareFields,
 }).min(1));
 
@@ -206,6 +230,13 @@ const paginationSchema = Joi.object({
   search: Joi.string().max(100).trim(),
 });
 
+const categoriesQuerySchema = Joi.object({
+  ...pagination,
+  search: Joi.string().max(100).trim(),
+  service_kind: Joi.string().valid('MEDICAL', 'NURSING', 'RADIOLOGY', 'LAB'),
+  is_specialized: Joi.boolean(),
+});
+
 const providerRatingsQuerySchema = Joi.object({
   ...pagination,
 });
@@ -223,6 +254,8 @@ module.exports = {
   providerAvailabilitySchema,
   providerListQuerySchema,
   categorySchema,
+  reorderSchema,
+  categoriesQuerySchema,
   createServiceSchema,
   updateServiceSchema,
   createPackageSchema,

@@ -15,6 +15,8 @@ const chatRoutes = require('./case-chat.routes');
 const fileRoutes = require('./case-files.routes');
 const invoiceRoutes = require('./case-invoice.routes');
 const reportRoutes = require('./case-report.routes');
+const insuranceRoutes = require('./case-insurance.routes');
+const expenseRoutes = require('./case-expenses.routes');
 
 const router = express.Router();
 
@@ -85,6 +87,8 @@ router.use('/chat', chatRoutes);
 router.use('/', invoiceRoutes);
 router.use('/', fileRoutes);
 router.use('/', reportRoutes);
+router.use('/', insuranceRoutes);
+router.use('/', expenseRoutes);
 
 router.get(
   '/:id',
@@ -95,6 +99,20 @@ router.get(
 );
 
 // ------------------------------------------------------------------ admin
+
+// A provider on the order adds services (own kind → to them; lab/radiology → partner; rest → admin).
+router.post(
+  '/:id/services',
+  authenticate,
+  providerOnly,
+  apiLimiter,
+  validate(schemas.caseIdParams, 'params'),
+  validate(schemas.addServicesSchema),
+  asyncHandler(async (req, res) => {
+    const view = await caseService.addServicesByProvider(req.params.id, req.user, req.body);
+    return res.status(201).json({ data: view });
+  })
+);
 
 router.get(
   '/:id/services/:serviceId/candidates',
